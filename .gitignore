@@ -1,0 +1,12 @@
+.env
+.venv/
+.idea/
+__pycache__/
+exports/
+obfuscated/
+obfuscated_release/
+hugyoku_auth.db
+hugyoku_auth.db-shm
+hugyoku_auth.db-wal
+profile.json
+streamlit_app.py.bak
