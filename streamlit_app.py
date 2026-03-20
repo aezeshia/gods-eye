@@ -10,6 +10,7 @@ import sys
 import difflib
 import hashlib
 import hmac
+import textwrap
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -36,6 +37,28 @@ except ImportError:
     PdfReader = None
 
 try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
+try:
+    from rapidocr_onnxruntime import RapidOCR
+except ImportError:
+    RapidOCR = None
+
+try:
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.pdfgen import canvas
+except ImportError:
+    LETTER = None
+    canvas = None
+
+try:
     # Tkinter is only used for the optional local folder picker.
     # Streamlit Cloud / headless environments may not have a usable Tk runtime.
     import tkinter as tk
@@ -48,9 +71,11 @@ except Exception:
 APP_DIR = Path(__file__).resolve().parent
 ENV_PATH = APP_DIR / ".env"
 AUTH_DB_PATH = APP_DIR / "hugyoku_auth.db"
+_OCR_ENGINE: object | None = None
 
 ROLE_PERMISSIONS = {
     "super_admin": {
+        "hugyoku": True,
         "dashboard": True,
         "workspaces": True,
         "academics": True,
@@ -60,6 +85,7 @@ ROLE_PERMISSIONS = {
         "admin": True,
     },
     "admin": {
+        "hugyoku": True,
         "dashboard": True,
         "workspaces": True,
         "academics": True,
@@ -69,6 +95,7 @@ ROLE_PERMISSIONS = {
         "admin": True,
     },
     "member": {
+        "hugyoku": True,
         "dashboard": True,
         "workspaces": True,
         "academics": True,
@@ -78,6 +105,7 @@ ROLE_PERMISSIONS = {
         "admin": False,
     },
     "viewer": {
+        "hugyoku": True,
         "dashboard": True,
         "workspaces": True,
         "academics": True,
@@ -140,6 +168,7 @@ STATE_DEFAULTS = {
     "active_page": "dashboard",
     "saved_name": "",
     "saved_include_date": False,
+    "save_destination_mode": "browser",
     "main_folder_name": "hugyoku_exports",
     "export_root_path": "",
     "output_include_name": True,
@@ -148,6 +177,7 @@ STATE_DEFAULTS = {
     "essay_include_tip": True,
     "profile_name_input": "",
     "profile_include_date_input": False,
+    "profile_save_destination_mode_input": "browser",
     "profile_main_folder_input": "hugyoku_exports",
     "profile_export_root_path_input": "",
     "profile_output_include_name_input": True,
@@ -441,9 +471,10 @@ h6 {
 
 .app-meta-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 0.75rem;
   margin-bottom: 1rem;
+  width: 100%;
 }
 
 .app-meta-item {
@@ -451,6 +482,8 @@ h6 {
   border-radius: 16px;
   background: var(--panel-muted);
   border: 1px solid rgba(100, 118, 148, 0.22);
+  min-width: 0;
+  height: 100%;
 }
 
 .app-meta-label {
@@ -465,6 +498,8 @@ h6 {
   color: var(--text);
   font-weight: 700;
   line-height: 1.45;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .app-route-block {
@@ -631,19 +666,37 @@ div[role="radiogroup"] label {
 }
 
 @media (max-width: 920px) {
+  [data-testid="stHorizontalBlock"] {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 0.8rem !important;
+  }
+
   [data-testid="column"] {
+    width: 100% !important;
+    max-width: 100% !important;
     min-width: 100% !important;
     flex-basis: 100% !important;
+    flex: 1 1 100% !important;
   }
 
   .app-hero-title {
     font-size: clamp(1.85rem, 8vw, 2.7rem);
   }
+
+  .app-meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 768px) {
   [data-testid="stSidebar"] {
-    min-width: 17rem;
+    min-width: 15rem;
+    max-width: 15rem;
+  }
+
+  [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] > div {
+    padding: 0.75rem 0.8rem;
   }
 
   .app-card-title {
@@ -662,6 +715,15 @@ div[role="radiogroup"] label {
     font-size: 0.94rem;
   }
 
+  .app-sidebar-brand {
+    font-size: 1.45rem;
+  }
+
+  .app-sidebar-copy {
+    font-size: 0.8rem;
+    line-height: 1.45;
+  }
+
   [data-testid="stTabs"] [data-baseweb="tab"] {
     width: 100%;
     justify-content: center;
@@ -670,6 +732,15 @@ div[role="radiogroup"] label {
   .app-chip {
     width: 100%;
     justify-content: center;
+  }
+
+  .app-meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .app-meta-item,
+  .app-route-block {
+    padding: 0.7rem 0.78rem;
   }
 }
 
@@ -682,6 +753,702 @@ div[role="radiogroup"] label {
 
   [data-testid="stVerticalBlockBorderWrapper"] > div {
     padding: 0.7rem;
+  }
+
+  .app-hero-title {
+    font-size: 1.85rem;
+  }
+
+  .app-card-subtitle,
+  .app-route-body,
+  .app-soft-note,
+  .app-sidebar-copy {
+    font-size: 0.84rem;
+    line-height: 1.5;
+  }
+
+  .app-chip-row {
+    gap: 0.35rem;
+  }
+
+  .app-chip {
+    padding: 0.38rem 0.62rem;
+    font-size: 0.76rem;
+  }
+
+  [data-baseweb="input"] input,
+  [data-baseweb="textarea"] textarea,
+  .stNumberInput input {
+    font-size: 0.92rem !important;
+  }
+}
+
+/* Premium 90+ polish overrides */
+
+.stApp {
+  background:
+    radial-gradient(circle at 8% 8%, rgba(255, 166, 114, 0.12) 0%, rgba(255, 166, 114, 0.03) 20%, transparent 42%),
+    radial-gradient(circle at 92% 12%, rgba(116, 176, 255, 0.12) 0%, rgba(116, 176, 255, 0.03) 24%, transparent 44%),
+    linear-gradient(180deg, #0c111b 0%, #080d15 55%, #060a12 100%);
+}
+
+.main .block-container {
+  max-width: 1380px;
+  padding-top: clamp(0.78rem, 1vw, 1.02rem);
+  padding-bottom: 2rem;
+}
+
+[data-testid="stVerticalBlockBorderWrapper"] {
+  background: linear-gradient(180deg, rgba(17, 24, 37, 0.97) 0%, rgba(10, 15, 24, 0.98) 100%);
+  border: 1px solid rgba(118, 136, 168, 0.26) !important;
+  border-radius: 22px !important;
+  box-shadow: 0 16px 34px rgba(2, 8, 18, 0.24);
+}
+
+[data-testid="stVerticalBlockBorderWrapper"]:hover {
+  transform: translateY(-2px);
+  border-color: rgba(182, 202, 236, 0.42) !important;
+  box-shadow: 0 20px 42px rgba(2, 8, 18, 0.28);
+}
+
+[data-testid="stVerticalBlockBorderWrapper"] > div {
+  padding: clamp(0.82rem, 0.82vw + 0.6rem, 1.04rem);
+}
+
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, rgba(10, 15, 24, 0.98) 0%, rgba(7, 11, 18, 0.99) 100%);
+  border-right: 1px solid rgba(96, 114, 148, 0.16);
+}
+
+[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+  background: linear-gradient(180deg, rgba(18, 25, 38, 0.94) 0%, rgba(12, 18, 29, 0.96) 100%);
+  border-radius: 18px !important;
+}
+
+.app-sidebar-brand-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+  margin-bottom: 0.8rem;
+}
+
+.app-sidebar-brand {
+  font-size: 1.38rem;
+  line-height: 1.05;
+  margin-bottom: 0.14rem;
+}
+
+.app-sidebar-copy {
+  font-size: 0.84rem;
+  line-height: 1.45;
+  margin-bottom: 0;
+}
+
+.app-sidebar-quiet {
+  color: rgba(185, 196, 216, 0.66);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.app-nav-section {
+  margin: 0.18rem 0 0.48rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: rgba(244, 220, 167, 0.78);
+  font-weight: 800;
+}
+
+.app-card-topline {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.52rem;
+}
+
+.app-anchor-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  height: 2rem;
+  padding: 0 0.55rem;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(255, 139, 114, 0.18) 0%, rgba(244, 220, 167, 0.18) 100%);
+  border: 1px solid rgba(244, 220, 167, 0.26);
+  color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  flex-shrink: 0;
+}
+
+.app-tier-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.26rem 0.66rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.app-tier-pill.primary {
+  color: #111723;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-soft) 100%);
+}
+
+.app-tier-pill.secondary {
+  color: #f7e7c0;
+  background: rgba(244, 220, 167, 0.1);
+  border: 1px solid rgba(244, 220, 167, 0.2);
+}
+
+.app-tier-pill.tertiary {
+  color: #d4dded;
+  background: rgba(118, 136, 168, 0.14);
+  border: 1px solid rgba(118, 136, 168, 0.2);
+}
+
+.app-card-header {
+  gap: 0.2rem;
+  margin-bottom: 0.68rem;
+}
+
+.app-card-title {
+  font-size: clamp(1.12rem, 1.4vw, 1.58rem);
+  line-height: 1.15;
+}
+
+.app-card-subtitle {
+  max-width: 74ch;
+  font-size: 0.93rem;
+  line-height: 1.58;
+}
+
+.app-card-subtitle.compact {
+  font-size: 0.86rem;
+  line-height: 1.48;
+}
+
+.app-hero-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.app-hero-title {
+  font-size: clamp(2.18rem, 4vw, 3.5rem);
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+  max-width: 12ch;
+  margin-bottom: 0;
+}
+
+.app-hero-lead {
+  color: var(--muted);
+  font-size: 0.98rem;
+  line-height: 1.62;
+  max-width: 72ch;
+}
+
+.app-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.62rem;
+  margin-top: 0.12rem;
+}
+
+.app-kpi-pill {
+  min-width: 0;
+  padding: 0.74rem 0.8rem;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(25, 34, 50, 0.94) 0%, rgba(17, 24, 36, 0.96) 100%);
+  border: 1px solid rgba(112, 130, 162, 0.18);
+}
+
+.app-kpi-label {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: rgba(244, 220, 167, 0.84);
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+.app-kpi-value {
+  display: block;
+  color: var(--text);
+  font-size: 0.94rem;
+  font-weight: 800;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.app-chip-row {
+  gap: 0.42rem;
+  margin-top: 0.1rem;
+}
+
+.app-chip {
+  padding: 0.42rem 0.78rem;
+  background: linear-gradient(180deg, rgba(33, 43, 62, 0.94) 0%, rgba(22, 30, 45, 0.96) 100%);
+  border: 1px solid rgba(243, 215, 154, 0.18);
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+.app-chip:hover {
+  transform: translateY(-1px);
+  border-color: rgba(243, 215, 154, 0.28);
+  background: linear-gradient(180deg, rgba(44, 57, 80, 0.96) 0%, rgba(26, 35, 52, 0.98) 100%);
+}
+
+.app-status-pill {
+  padding: 0.44rem 0.86rem;
+  margin-bottom: 0.82rem;
+}
+
+.app-meta-grid {
+  gap: 0.62rem;
+  margin-bottom: 0.82rem;
+}
+
+.app-meta-item {
+  padding: 0.74rem 0.82rem;
+  background: linear-gradient(180deg, rgba(34, 45, 65, 0.9) 0%, rgba(26, 35, 52, 0.96) 100%);
+  border-radius: 18px;
+}
+
+.app-route-block {
+  padding: 0.74rem 0.86rem;
+  background: linear-gradient(180deg, rgba(28, 38, 56, 0.92) 0%, rgba(20, 28, 42, 0.96) 100%);
+  border-radius: 18px;
+  margin-bottom: 0.55rem;
+}
+
+.app-route-label {
+  margin-bottom: 0.36rem;
+}
+
+.app-route-body {
+  font-size: 0.84rem;
+  line-height: 1.56;
+}
+
+[data-testid="stExpander"] {
+  border: 1px solid rgba(100, 118, 148, 0.18);
+  border-radius: 18px;
+  background: rgba(16, 22, 34, 0.58);
+  overflow: hidden;
+}
+
+[data-testid="stExpander"] details {
+  border: none !important;
+}
+
+[data-testid="stExpander"] summary {
+  font-weight: 800 !important;
+  color: var(--text) !important;
+}
+
+.stButton > button,
+.stDownloadButton > button {
+  min-height: 2.92rem;
+  border-radius: 14px;
+  border: 1px solid rgba(128, 146, 180, 0.22);
+  background: linear-gradient(180deg, rgba(33, 44, 63, 0.98) 0%, rgba(19, 27, 40, 0.98) 100%);
+  box-shadow: 0 10px 22px rgba(3, 9, 18, 0.18);
+}
+
+.stButton > button:hover,
+.stDownloadButton > button:hover {
+  transform: translateY(-1px) scale(1.002);
+  border-color: rgba(194, 213, 245, 0.3);
+  box-shadow: 0 14px 28px rgba(3, 9, 18, 0.22);
+}
+
+div[data-testid="stBaseButton-primary"] > button,
+.stDownloadButton > button[kind="primary"] {
+  background: linear-gradient(135deg, #ff8f74 0%, #ffd88f 100%);
+  color: #0d1420;
+  font-weight: 900;
+  letter-spacing: 0.01em;
+  box-shadow: 0 14px 28px rgba(255, 139, 114, 0.24);
+}
+
+div[data-testid="stBaseButton-primary"] > button:hover,
+.stDownloadButton > button[kind="primary"]:hover {
+  box-shadow: 0 18px 34px rgba(255, 139, 114, 0.3);
+}
+
+[data-baseweb="input"] > div,
+[data-baseweb="textarea"] > div,
+[data-baseweb="select"] > div,
+.stNumberInput > div > div {
+  border-radius: 14px !important;
+  background: rgba(11, 17, 27, 0.94) !important;
+}
+
+[data-testid="stTabs"] [data-baseweb="tab"] {
+  min-height: 2.45rem;
+  padding-inline: 0.88rem;
+  font-weight: 700;
+}
+
+@media (max-width: 920px) {
+  .app-hero-title {
+    max-width: none;
+  }
+
+  .app-kpi-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .app-sidebar-brand-row {
+    gap: 0.65rem;
+  }
+
+  .app-anchor-badge {
+    min-width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 10px;
+    font-size: 0.7rem;
+  }
+
+  .app-kpi-row {
+    grid-template-columns: 1fr;
+  }
+
+  .app-card-subtitle {
+    max-width: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .app-tier-pill {
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
+  }
+
+  .app-hero-title {
+    font-size: 1.98rem;
+  }
+
+  .app-kpi-pill,
+  .app-meta-item,
+  .app-route-block {
+    padding: 0.68rem 0.72rem;
+  }
+}
+
+/* Elite 95+ product-grade overrides */
+
+.main .block-container {
+  max-width: 1440px;
+  padding-top: clamp(0.68rem, 0.72vw, 0.9rem);
+}
+
+[data-testid="stVerticalBlockBorderWrapper"] {
+  background:
+    linear-gradient(180deg, rgba(15, 22, 34, 0.985) 0%, rgba(9, 14, 24, 0.985) 100%),
+    linear-gradient(135deg, rgba(255, 143, 116, 0.05) 0%, transparent 42%);
+  border: 1px solid rgba(128, 147, 181, 0.28) !important;
+  border-radius: 24px !important;
+  box-shadow:
+    0 20px 44px rgba(2, 8, 18, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+[data-testid="stVerticalBlockBorderWrapper"] > div {
+  padding: clamp(0.84rem, 0.78vw + 0.5rem, 1.08rem);
+}
+
+[data-testid="stVerticalBlockBorderWrapper"]:hover {
+  box-shadow:
+    0 24px 52px rgba(2, 8, 18, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+[data-testid="stSidebar"] {
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255, 147, 117, 0.08) 0%, transparent 28%),
+    linear-gradient(180deg, rgba(10, 15, 24, 0.99) 0%, rgba(6, 10, 17, 0.995) 100%);
+}
+
+[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+  border-radius: 20px !important;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.18);
+}
+
+[data-testid="stSidebar"] .stButton > button {
+  min-height: 2.62rem;
+  border-radius: 15px;
+  font-size: 0.92rem;
+  font-weight: 760;
+}
+
+.app-hero-shell {
+  display: grid;
+  gap: 0.88rem;
+}
+
+.app-hero-title {
+  max-width: 10ch;
+  font-size: clamp(3rem, 4.45vw, 4.65rem);
+  line-height: 0.92;
+  letter-spacing: -0.055em;
+  font-weight: 900;
+  color: #fff4df;
+  text-wrap: balance;
+  margin-bottom: 0;
+}
+
+.app-hero-lead {
+  max-width: 58ch;
+  font-size: 1rem;
+  line-height: 1.6;
+  color: rgba(223, 231, 246, 0.9);
+}
+
+.app-hero-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.34rem 0.7rem;
+  width: fit-content;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(141, 160, 193, 0.2);
+  color: rgba(209, 219, 238, 0.8);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.app-luxury-rule {
+  width: 100%;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(255, 143, 116, 0.4) 0%, rgba(244, 220, 167, 0.2) 32%, rgba(244, 220, 167, 0.06) 72%, transparent 100%);
+  margin: 0.1rem 0 0.15rem;
+}
+
+.app-kpi-row {
+  gap: 0.72rem;
+}
+
+.app-kpi-pill {
+  gap: 0.26rem;
+  min-height: 4.4rem;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(28, 38, 56, 0.9) 0%, rgba(20, 28, 42, 0.94) 100%);
+  border: 1px solid rgba(122, 143, 177, 0.26);
+}
+
+.app-kpi-label {
+  color: rgba(244, 220, 167, 0.82);
+  font-size: 0.68rem;
+}
+
+.app-kpi-value {
+  font-size: 1.04rem;
+  line-height: 1.28;
+  color: #fff6e7;
+}
+
+.app-card-title {
+  font-size: clamp(1.34rem, 1.25vw, 1.72rem);
+  letter-spacing: -0.03em;
+}
+
+.app-card-subtitle {
+  max-width: 62ch;
+  color: rgba(207, 218, 237, 0.84);
+}
+
+.app-card-subtitle.compact {
+  max-width: 58ch;
+  font-size: 0.89rem;
+}
+
+.app-card-topline {
+  margin-bottom: 0.62rem;
+}
+
+.app-anchor-badge {
+  min-width: 2.05rem;
+  height: 2.05rem;
+  border-radius: 13px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.app-tier-pill {
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 820;
+}
+
+.app-tier-pill.primary {
+  box-shadow: 0 8px 20px rgba(255, 139, 114, 0.18);
+}
+
+.app-tier-pill.secondary,
+.app-tier-pill.tertiary {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(244, 220, 167, 0.16);
+}
+
+.app-chip-row {
+  gap: 0.42rem;
+}
+
+.app-chip {
+  padding: 0.42rem 0.72rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(244, 220, 167, 0.15);
+  color: #f5e3bd;
+  font-size: 0.76rem;
+  font-weight: 760;
+}
+
+.app-meta-grid {
+  gap: 0.7rem;
+}
+
+.app-meta-item {
+  min-height: 5.2rem;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(30, 40, 59, 0.88) 0%, rgba(24, 32, 47, 0.94) 100%);
+  border: 1px solid rgba(120, 139, 173, 0.24);
+}
+
+.app-meta-value {
+  font-size: 1rem;
+  line-height: 1.34;
+  color: #fff4df;
+}
+
+.app-route-block {
+  border-radius: 18px;
+  border: 1px solid rgba(122, 143, 177, 0.24);
+  background:
+    linear-gradient(180deg, rgba(31, 42, 62, 0.88) 0%, rgba(22, 31, 47, 0.94) 100%);
+}
+
+.app-route-label {
+  font-size: 0.7rem;
+}
+
+.app-route-body {
+  color: rgba(232, 238, 248, 0.92);
+}
+
+.stButton > button,
+.stDownloadButton > button {
+  min-height: 2.92rem;
+  border-radius: 17px;
+  border: 1px solid rgba(124, 143, 176, 0.26);
+  background:
+    linear-gradient(180deg, rgba(38, 49, 70, 0.98) 0%, rgba(22, 30, 45, 0.98) 100%);
+  box-shadow:
+    0 12px 24px rgba(2, 8, 18, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  font-weight: 760;
+  letter-spacing: 0.01em;
+}
+
+.stButton > button:hover,
+.stDownloadButton > button:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 18px 30px rgba(2, 8, 18, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+div[data-testid="stBaseButton-primary"] > button,
+.stDownloadButton > button[kind="primary"] {
+  background: linear-gradient(135deg, #ff936f 0%, #ffd08a 100%);
+  color: #10161f;
+  box-shadow:
+    0 16px 32px rgba(255, 139, 114, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+div[data-testid="stBaseButton-primary"] > button:hover,
+.stDownloadButton > button[kind="primary"]:hover {
+  box-shadow:
+    0 20px 38px rgba(255, 139, 114, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+[data-testid="stExpander"] {
+  border-radius: 18px;
+  border: 1px solid rgba(124, 143, 176, 0.22);
+  background: rgba(255, 255, 255, 0.022);
+  overflow: hidden;
+}
+
+[data-testid="stExpander"] summary {
+  font-weight: 760;
+}
+
+@media (max-width: 1100px) {
+  .app-hero-title {
+    max-width: none;
+    font-size: clamp(2.55rem, 6.2vw, 4rem);
+  }
+}
+
+@media (max-width: 920px) {
+  .app-meta-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .app-kpi-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  [data-testid="stSidebar"] {
+    min-width: 14rem;
+    max-width: 14rem;
+  }
+
+  .app-hero-title {
+    font-size: 2.34rem;
+    line-height: 0.96;
+  }
+
+  .app-hero-lead {
+    font-size: 0.92rem;
+  }
+
+  .app-meta-grid,
+  .app-kpi-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .app-hero-title {
+    font-size: 2.02rem;
+  }
+
+  .app-hero-note {
+    width: 100%;
+    justify-content: center;
+    font-size: 0.75rem;
+  }
+
+  .app-chip {
+    width: 100%;
+    justify-content: center;
   }
 }
 
@@ -749,8 +1516,21 @@ def current_package_root_name() -> str:
     return sanitize_filename(st.session_state.get("main_folder_name") or "hugyoku_exports")
 
 
+def local_folder_picker_available() -> bool:
+    return tk is not None and filedialog is not None
+
+
+def save_destination_mode() -> str:
+    mode = str(st.session_state.get("save_destination_mode") or "browser").strip().lower()
+    return mode if mode in {"browser", "local"} else "browser"
+
+
+def local_save_active() -> bool:
+    return save_destination_mode() == "local" and bool((st.session_state.get("export_root_path") or "").strip())
+
+
 def browser_export_label() -> str:
-    return "Browser download (.docx file)"
+    return "Browser-managed download (.docx file)"
 
 
 def today_string() -> str:
@@ -1061,8 +1841,12 @@ def go(page: str) -> None:
 def save_profile() -> None:
     st.session_state.saved_name = st.session_state.profile_name_input.strip()
     st.session_state.saved_include_date = bool(st.session_state.profile_include_date_input)
+    mode = str(st.session_state.profile_save_destination_mode_input or "browser").strip().lower()
+    if mode not in {"browser", "local"}:
+        mode = "browser"
+    st.session_state.save_destination_mode = mode
     selected_path = (st.session_state.profile_export_root_path_input or "").strip()
-    if selected_path:
+    if mode == "local" and selected_path:
         normalized_folder = sanitize_filename(Path(selected_path).name)
         st.session_state.export_root_path = selected_path
     else:
@@ -1079,6 +1863,7 @@ def save_profile() -> None:
 def clear_profile() -> None:
     st.session_state.saved_name = ""
     st.session_state.saved_include_date = False
+    st.session_state.save_destination_mode = "browser"
     st.session_state.main_folder_name = "hugyoku_exports"
     st.session_state.export_root_path = ""
     st.session_state.output_include_name = False
@@ -1087,6 +1872,7 @@ def clear_profile() -> None:
     st.session_state.essay_include_tip = True
     st.session_state.profile_name_input = ""
     st.session_state.profile_include_date_input = False
+    st.session_state.profile_save_destination_mode_input = "browser"
     st.session_state.profile_main_folder_input = "hugyoku_exports"
     st.session_state.profile_export_root_path_input = ""
     st.session_state.profile_output_include_name_input = False
@@ -1126,7 +1912,7 @@ def export_metadata_lines(category: str = "generic", name_override: str | None =
 
 
 def folder_path_lines() -> dict[str, str]:
-    export_root = (st.session_state.export_root_path or "").strip()
+    export_root = (st.session_state.export_root_path or "").strip() if save_destination_mode() == "local" else ""
     paths = {"main": export_root or browser_export_label()}
     for category, folder in TOOL_FOLDERS.items():
         if export_root:
@@ -1155,7 +1941,7 @@ def build_export_document(
         output_options=current_output_settings(),
     )
 
-    export_root = (st.session_state.export_root_path or "").strip()
+    export_root = (st.session_state.export_root_path or "").strip() if save_destination_mode() == "local" else ""
     local_docx_path = str(Path(export_root) / internal_folder / docx_filename) if export_root else None
     return docx_bytes, docx_filename, local_docx_path
 
@@ -1172,11 +1958,14 @@ def apply_selected_export_folder(selected_folder: str | None) -> None:
         normalized_folder = sanitize_filename(Path(selected_folder).name)
         st.session_state.profile_export_root_path_input = selected_folder
         st.session_state.export_root_path = selected_folder
+        st.session_state.save_destination_mode = "local"
+        st.session_state.profile_save_destination_mode_input = "local"
         st.session_state.main_folder_name = normalized_folder
         st.session_state.profile_main_folder_input = normalized_folder
     else:
-        st.session_state.profile_export_root_path_input = ""
         st.session_state.export_root_path = ""
+        st.session_state.save_destination_mode = "browser"
+        st.session_state.profile_save_destination_mode_input = "browser"
         st.session_state.main_folder_name = "hugyoku_exports"
         st.session_state.profile_main_folder_input = "hugyoku_exports"
 
@@ -1372,14 +2161,27 @@ def html_text(value: object) -> str:
 
 
 # Shared card helpers keep the layout and typography consistent across pages.
-def render_card_header(title: str, subtitle: str, kicker: str | None = None) -> None:
-    kicker_html = f"<div class='app-kicker'>{html_text(kicker)}</div>" if kicker else ""
+def render_card_header(
+    title: str,
+    subtitle: str,
+    kicker: str | None = None,
+    *,
+    anchor: str | None = None,
+    tier: str = "secondary",
+    compact: bool = False,
+) -> None:
+    kicker_text = (kicker or "").strip()
+    anchor_html = f"<span class='app-anchor-badge'>{html_text(anchor)}</span>" if anchor else ""
+    tier_class = tier if tier in {"primary", "secondary", "tertiary"} else "secondary"
+    tier_html = f"<span class='app-tier-pill {tier_class}'>{html_text(kicker_text)}</span>" if kicker_text else ""
+    topline_html = f"<div class='app-card-topline'>{anchor_html}{tier_html}</div>" if anchor_html or tier_html else ""
+    subtitle_class = "app-card-subtitle compact" if compact else "app-card-subtitle"
     st.markdown(
         f"""
         <div class="app-card-header">
-          {kicker_html}
+          {topline_html}
           <div class="app-card-title">{html_text(title)}</div>
-          <div class="app-card-subtitle">{html_text(subtitle)}</div>
+          <div class="{subtitle_class}">{html_text(subtitle)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1408,18 +2210,42 @@ def render_route_block(title: str, body: str) -> None:
 def render_meta_grid(items: list[tuple[str, str]]) -> None:
     if not items:
         return
-    columns = st.columns(len(items), gap="small")
-    for column, (label, value) in zip(columns, items):
-        with column:
-            st.markdown(
-                f"""
-                <div class="app-meta-item">
-                  <div class="app-meta-label">{html_text(label)}</div>
-                  <div class="app-meta-value">{html_text(value)}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    cards_html = "".join(
+        f"<div class='app-meta-item'><div class='app-meta-label'>{html_text(label)}</div><div class='app-meta-value'>{html_text(value)}</div></div>"
+        for label, value in items
+    )
+    st.markdown(f"<div class='app-meta-grid'>{cards_html}</div>", unsafe_allow_html=True)
+
+
+def render_kpi_row(items: list[tuple[str, str]]) -> None:
+    if not items:
+        return
+    pills_html = "".join(
+        f"<div class='app-kpi-pill'><span class='app-kpi-label'>{html_text(label)}</span><span class='app-kpi-value'>{html_text(value)}</span></div>"
+        for label, value in items
+    )
+    st.markdown(f"<div class='app-kpi-row'>{pills_html}</div>", unsafe_allow_html=True)
+
+
+def render_preview_panel(
+    title: str,
+    subtitle: str,
+    field_label: str,
+    value: str,
+    *,
+    height: int = 360,
+    empty_title: str = "Preview will appear here",
+    empty_body: str = "Use the workspace on the left to generate a result. The preview and export actions will appear once there is real content to review.",
+    anchor: str = "PV",
+    tier: str = "tertiary",
+) -> bool:
+    render_card_header(title, subtitle, "Preview", anchor=anchor, tier=tier, compact=True)
+    content = (value or "").strip()
+    if content:
+        st.text_area(field_label, value=value, height=height, disabled=True)
+        return True
+    render_route_block(empty_title, empty_body)
+    return False
 
 
 def render_header(ai_ready: bool, model_label: str, ai_message: str) -> None:
@@ -2369,6 +3195,20 @@ STATE_DEFAULTS.update(
         "workspace_new_name_input": "",
         "workspace_new_description_input": "",
         "workspace_analysis_result": "",
+        "hugyoku_task_input": "",
+        "hugyoku_attachment_note": "",
+        "hugyoku_stage": 1,
+        "hugyoku_understanding": "",
+        "hugyoku_refinement_prompt": "",
+        "hugyoku_refinement_round": 0,
+        "hugyoku_output_sections": [],
+        "hugyoku_output_title": "",
+        "hugyoku_output_format": "docx",
+        "hugyoku_output_raw": "",
+        "hugyoku_result_prompt": "",
+        "hugyoku_generation_note": "",
+        "hugyoku_last_bundle": "",
+        "hugyoku_last_ocr_status": "",
         "source_lab_question_input": "",
         "source_lab_answer": "",
         "source_lab_analysis": "",
@@ -2460,11 +3300,16 @@ TOOL_FOLDERS.update(
         "rubric": "rubric_writer",
         "batch": "batch_output_generator",
         "codegen": "code_generator",
+        "hugyoku": "hugyoku_universal",
     }
 )
 
 PAGE_DETAILS.update(
     {
+        "hugyoku": {
+            "title": "Hugyoku",
+            "subtitle": "Universal academic command workflow that reads the task, confirms the AI understanding, loops on corrections, then generates an editable final result and export.",
+        },
         "workspaces": {
             "title": "Workspaces",
             "subtitle": "Create project workspaces, collect source files and screenshots, and keep all generated outputs grouped by task.",
@@ -3499,6 +4344,338 @@ def render_download_button(title: str, body: str, default_name: str, category: s
     )
 
 
+def ocr_supported() -> bool:
+    return RapidOCR is not None and Image is not None and np is not None
+
+
+def get_ocr_engine() -> object:
+    global _OCR_ENGINE
+    if _OCR_ENGINE is None:
+        if not ocr_supported():
+            raise RuntimeError("OCR support is not installed in this environment.")
+        _OCR_ENGINE = RapidOCR()
+    return _OCR_ENGINE
+
+
+def extract_image_text_from_bytes(image_bytes: bytes) -> str:
+    if not ocr_supported():
+        raise RuntimeError("OCR support is not available in this environment.")
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    results, _elapsed = get_ocr_engine()(np.array(image))
+    if not results:
+        return ""
+    parts: list[str] = []
+    for item in results:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            text_value = item[1]
+            if isinstance(text_value, str) and text_value.strip():
+                parts.append(text_value.strip())
+    return "\n".join(parts).strip()
+
+
+def read_hugyoku_reference_bundle(doc_files: list[object], image_files: list[object], attachment_note: str) -> tuple[str, list[str], str]:
+    parts: list[str] = []
+    issues: list[str] = []
+    ocr_status = "No images attached."
+    for uploaded_file in doc_files:
+        try:
+            text = read_uploaded_document(uploaded_file)
+            parts.append(f"[Reference File: {getattr(uploaded_file, 'name', 'reference.txt')}]\n{text}")
+        except Exception as exc:
+            issues.append(f"{getattr(uploaded_file, 'name', 'file')}: {exc}")
+    if image_files:
+        if ocr_supported():
+            extracted_count = 0
+            for uploaded_image in image_files:
+                try:
+                    text = extract_image_text_from_bytes(uploaded_image.getvalue())
+                    label = getattr(uploaded_image, "name", "image")
+                    if text:
+                        parts.append(f"[Image OCR: {label}]\n{text}")
+                        extracted_count += 1
+                    else:
+                        parts.append(f"[Image OCR: {label}]\nNo readable text was detected from this image.")
+                except Exception as exc:
+                    issues.append(f"{getattr(uploaded_image, 'name', 'image')}: OCR failed ({exc})")
+            ocr_status = f"OCR processed {extracted_count} of {len(image_files)} image(s)."
+        else:
+            for uploaded_image in image_files:
+                parts.append(
+                    f"[Image Attachment: {getattr(uploaded_image, 'name', 'image')}]\n"
+                    "Image attached, but OCR is not available in this environment."
+                )
+            ocr_status = "Images attached, but OCR support is not available here."
+    if attachment_note.strip():
+        parts.append(f"[Attachment Note]\n{attachment_note.strip()}")
+    return "\n\n".join(parts).strip(), issues, ocr_status
+
+
+def detect_requested_export_format(task_text: str, understanding_text: str = "") -> str:
+    explicit = extract_section_value(
+        understanding_text,
+        ["Requested File Format", "Preferred File Format", "Submission Format", "Output Format"],
+    ).strip().lower()
+    combined = f"{explicit}\n{task_text}".lower()
+    if any(token in combined for token in ["pdf", ".pdf", "portable document"]):
+        return "pdf"
+    if any(token in combined for token in ["txt", ".txt", "text file", "plain text"]):
+        return "txt"
+    if any(token in combined for token in ["docx", ".docx", "word file", "microsoft word", "ms word"]):
+        return "docx"
+    return "docx"
+
+
+def compile_hugyoku_sections(sections: list[dict[str, object]]) -> str:
+    parts: list[str] = []
+    for section in sections:
+        heading = str(section.get("heading", "")).strip()
+        content = str(section.get("content", "")).strip()
+        if heading and content:
+            parts.append(f"{heading}:\n{content}")
+        elif heading:
+            parts.append(heading)
+        elif content:
+            parts.append(content)
+    return "\n\n".join(part for part in parts if part.strip()).strip()
+
+
+def build_hugyoku_sections(text: str) -> list[dict[str, object]]:
+    sections: list[dict[str, object]] = []
+    for index, block in enumerate(parse_structured_blocks(text), start=1):
+        if block["type"] == "section":
+            sections.append(
+                {
+                    "heading": str(block.get("heading", "")).strip() or f"Section {index}",
+                    "content": str(block.get("content", "")).strip(),
+                }
+            )
+        else:
+            sections.append(
+                {
+                    "heading": f"Section {index}",
+                    "content": str(block.get("content", "")).strip(),
+                }
+            )
+    if not sections and text.strip():
+        sections.append({"heading": "Main Output", "content": text.strip()})
+    return sections
+
+
+def sync_hugyoku_sections_from_widgets() -> None:
+    updated: list[dict[str, object]] = []
+    for index, section in enumerate(list(st.session_state.get("hugyoku_output_sections", []))):
+        heading = str(st.session_state.get(f"hugyoku_section_heading_{index}", section.get("heading", ""))).strip()
+        content = str(st.session_state.get(f"hugyoku_section_content_{index}", section.get("content", ""))).strip()
+        updated.append({"heading": heading, "content": content})
+    st.session_state.hugyoku_output_sections = updated
+    st.session_state.hugyoku_output_raw = compile_hugyoku_sections(updated)
+
+
+def prime_hugyoku_section_widgets(sections: list[dict[str, object]]) -> None:
+    for index, section in enumerate(sections):
+        st.session_state[f"hugyoku_section_heading_{index}"] = str(section.get("heading", "")).strip()
+        st.session_state[f"hugyoku_section_content_{index}"] = str(section.get("content", "")).strip()
+
+
+def guess_hugyoku_title(task_text: str, understanding_text: str, sections: list[dict[str, object]]) -> str:
+    explicit = extract_section_value(understanding_text, ["Requested Output", "Task Summary"]).strip()
+    for section in sections:
+        heading = str(section.get("heading", "")).strip().lower()
+        if heading in {"title", "essay title", "document title"}:
+            content = str(section.get("content", "")).strip()
+            if content:
+                return content
+    if explicit:
+        return explicit[:90]
+    cleaned = " ".join(task_text.strip().split())
+    return cleaned[:90] if cleaned else "Hugyoku Output"
+
+
+def render_txt_bytes(title: str, body: str, metadata_lines: list[str] | None = None) -> bytes:
+    lines: list[str] = [title.strip() or "Untitled Document"]
+    if metadata_lines:
+        lines.append(" | ".join(metadata_lines))
+    if body.strip():
+        lines.extend(["", body.strip()])
+    return "\n".join(lines).encode("utf-8")
+
+
+def render_pdf_bytes(title: str, body: str, metadata_lines: list[str] | None = None) -> bytes:
+    if canvas is None or LETTER is None:
+        raise RuntimeError("PDF export requires reportlab in this environment.")
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=LETTER)
+    width, height = LETTER
+    left_margin = 72
+    top = height - 72
+    bottom = 72
+    line_height = 14
+    y = top
+
+    def write_line(text: str, *, font: str = "Helvetica", size: int = 11) -> None:
+        nonlocal y
+        if y <= bottom:
+            pdf.showPage()
+            y = top
+        pdf.setFont(font, size)
+        pdf.drawString(left_margin, y, text)
+        y -= line_height if size <= 11 else line_height + 2
+
+    write_line(title.strip() or "Untitled Document", font="Helvetica-Bold", size=18)
+    if metadata_lines:
+        for meta_line in metadata_lines:
+            for wrapped in textwrap.wrap(meta_line, width=86) or [""]:
+                write_line(wrapped, font="Helvetica-Oblique", size=10)
+        y -= 4
+
+    for paragraph in compile_hugyoku_sections(build_hugyoku_sections(body)).split("\n"):
+        wrapped_lines = textwrap.wrap(paragraph, width=90) or [""]
+        for wrapped in wrapped_lines:
+            write_line(wrapped)
+
+    pdf.save()
+    return buffer.getvalue()
+
+
+def build_hugyoku_export_payload(
+    title: str,
+    body: str,
+    export_format: str,
+    *,
+    name_override: str | None = None,
+) -> tuple[bytes, str, str, str | None]:
+    requested = export_format.lower().strip()
+    if requested not in {"docx", "pdf", "txt"}:
+        requested = "docx"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stem = sanitize_filename(name_override or title or "hugyoku_output")
+    metadata_lines = export_metadata_lines(category="hugyoku", name_override=name_override)
+    export_root = (st.session_state.export_root_path or "").strip() if save_destination_mode() == "local" else ""
+    internal_folder = TOOL_FOLDERS.get("hugyoku", "hugyoku_universal")
+    if requested == "pdf":
+        payload = render_pdf_bytes(title, body, metadata_lines)
+        filename = f"{stem}_{stamp}.pdf"
+        mime = "application/pdf"
+    elif requested == "txt":
+        payload = render_txt_bytes(title, body, metadata_lines)
+        filename = f"{stem}_{stamp}.txt"
+        mime = "text/plain"
+    else:
+        payload = render_docx_bytes(
+            title,
+            body,
+            category="hugyoku",
+            metadata_lines=metadata_lines,
+            output_options=current_output_settings(),
+        )
+        filename = f"{stem}_{stamp}.docx"
+        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    local_path = str(Path(export_root) / internal_folder / filename) if export_root else None
+    return payload, filename, mime, local_path
+
+
+def prepare_hugyoku_download(file_name: str) -> None:
+    append_history_entry(
+        "export",
+        f"Prepared Hugyoku download: {file_name}",
+        "Browser download prepared for the universal Hugyoku workflow.",
+        "hugyoku",
+        active_workspace_name(),
+        "hugyoku",
+    )
+    st.session_state.flash_message = f"Prepared download: {file_name}"
+    st.session_state.flash_level = "info"
+
+
+def render_hugyoku_export_button(title: str, body: str, export_format: str) -> None:
+    file_bytes, file_name, mime_type, local_path = build_hugyoku_export_payload(title, body, export_format, name_override=title)
+    if local_path:
+        render_route_block("Local save route", local_path)
+        local_col, open_col = st.columns(2, gap="small")
+        if local_col.button("Save To Selected Folder", key="save_local_hugyoku_export", use_container_width=True, type="primary"):
+            try:
+                saved_path = save_local_export_file(file_bytes, local_path)
+                append_history_entry("export", f"Saved Hugyoku export: {file_name}", saved_path, "hugyoku", active_workspace_name(), "hugyoku")
+                st.success(f"Saved to {saved_path}")
+            except Exception as exc:
+                st.error(f"Could not save to the selected folder: {exc}")
+        if open_col.button("Open Selected Folder", key="open_local_hugyoku_export", use_container_width=True):
+            try:
+                target_folder = Path(local_path).parent
+                target_folder.mkdir(parents=True, exist_ok=True)
+                open_in_file_manager(str(target_folder))
+            except Exception as exc:
+                st.error(f"Could not open the selected folder: {exc}")
+    else:
+        render_route_block("Browser download", f"{file_name}\nSaved directly by your browser.")
+    st.download_button(
+        f"Download {export_format.upper()} File",
+        data=file_bytes,
+        file_name=file_name,
+        mime=mime_type,
+        key=f"download_hugyoku_{sanitize_filename(title)}_{export_format}",
+        use_container_width=True,
+        on_click=prepare_hugyoku_download,
+        args=(file_name,),
+        type="secondary" if local_path else "primary",
+    )
+
+
+def build_hugyoku_understanding_prompt(task_text: str, reference_bundle: str) -> str:
+    return (
+        "Analyze the user's school or academic task before generating anything.\n"
+        "Your job is to explain what you understand from the request so the user can confirm or correct it.\n\n"
+        f"User task:\n{task_text or 'No direct task text provided. Infer from references.'}\n\n"
+        f"Reference bundle:\n{trim_prompt_source(reference_bundle) if reference_bundle else 'No reference files provided.'}\n\n"
+        "Return these plain-text sections in this exact order:\n"
+        "Task Summary:\n"
+        "What You Understand:\n"
+        "Requested Output:\n"
+        "Requested File Format:\n"
+        "Important Requirements:\n"
+        "Missing or Uncertain Parts:\n"
+        "Next Confirmation Step:\n"
+    )
+
+
+def build_hugyoku_refinement_prompt(task_text: str, reference_bundle: str, current_understanding: str, refinement_prompt: str) -> str:
+    return (
+        "Revise your understanding of the user's academic task.\n"
+        "Keep the task understanding accurate, specific, and ready for confirmation before generation.\n\n"
+        f"Original task:\n{task_text or 'No direct task text provided.'}\n\n"
+        f"Reference bundle:\n{trim_prompt_source(reference_bundle) if reference_bundle else 'No reference files provided.'}\n\n"
+        f"Current understanding:\n{current_understanding}\n\n"
+        f"User correction or refinement:\n{refinement_prompt}\n\n"
+        "Return these plain-text sections in this exact order:\n"
+        "Task Summary:\n"
+        "What You Understand:\n"
+        "Requested Output:\n"
+        "Requested File Format:\n"
+        "Important Requirements:\n"
+        "Missing or Uncertain Parts:\n"
+        "Next Confirmation Step:\n"
+    )
+
+
+def build_hugyoku_generation_prompt(task_text: str, reference_bundle: str, understanding_text: str, export_format: str, revision_prompt: str = "") -> str:
+    return (
+        "Generate the final academic deliverable based on the confirmed understanding.\n"
+        "Write the best possible study-safe output, suitable for review and submission drafting.\n\n"
+        f"Original task:\n{task_text or 'No direct task text provided.'}\n\n"
+        f"Confirmed understanding:\n{understanding_text}\n\n"
+        f"Reference bundle:\n{trim_prompt_source(reference_bundle) if reference_bundle else 'No reference files provided.'}\n\n"
+        f"Requested file format: {export_format.upper()}\n"
+        f"Additional revision prompt: {revision_prompt or 'None'}\n\n"
+        "Return clear plain-text sections with headings and content.\n"
+        "Use this order when possible:\n"
+        "Title:\n"
+        "Final Output:\n"
+        "Supporting Notes:\n"
+        "Submission Notes:\n\n"
+        "Do not use markdown fence blocks."
+    )
+
+
 def clear_workspace_analysis_workspace() -> None:
     st.session_state.workspace_analysis_result = ""
 
@@ -3583,6 +4760,23 @@ def clear_compare_workspace() -> None:
     st.session_state.compare_used_model_b = ""
 
 
+def clear_hugyoku_workspace() -> None:
+    st.session_state.hugyoku_task_input = ""
+    st.session_state.hugyoku_attachment_note = ""
+    st.session_state.hugyoku_stage = 1
+    st.session_state.hugyoku_understanding = ""
+    st.session_state.hugyoku_refinement_prompt = ""
+    st.session_state.hugyoku_refinement_round = 0
+    st.session_state.hugyoku_output_sections = []
+    st.session_state.hugyoku_output_title = ""
+    st.session_state.hugyoku_output_format = "docx"
+    st.session_state.hugyoku_output_raw = ""
+    st.session_state.hugyoku_result_prompt = ""
+    st.session_state.hugyoku_generation_note = ""
+    st.session_state.hugyoku_last_bundle = ""
+    st.session_state.hugyoku_last_ocr_status = ""
+
+
 RESET_ACTIONS.update(
     {
         "clear_workspace_analysis_workspace": clear_workspace_analysis_workspace,
@@ -3598,6 +4792,7 @@ RESET_ACTIONS.update(
         "clear_codegen_workspace": clear_codegen_workspace,
         "clear_selftest_workspace": clear_selftest_workspace,
         "clear_compare_workspace": clear_compare_workspace,
+        "clear_hugyoku_workspace": clear_hugyoku_workspace,
     }
 )
 
@@ -3615,6 +4810,9 @@ def render_history_snippets(limit: int = 5, page_filter: str | None = None) -> N
                 str(entry.get("title", "History Entry")),
                 str(entry.get("details", "")),
                 f"{entry.get('timestamp', '')} • {entry.get('kind', 'event')}",
+                anchor="EV",
+                tier="tertiary",
+                compact=True,
             )
             render_meta_grid(
                 [
@@ -3637,6 +4835,9 @@ def render_workspace_outputs(limit: int = 6) -> None:
                 str(output.get("title", "Saved Output")),
                 str(output.get("preview", "")),
                 f"{output.get('timestamp', '')} • {output.get('kind', 'output')}",
+                anchor="OP",
+                tier="tertiary",
+                compact=True,
             )
             st.caption(f"Category: {output.get('category', '-')}")
 
@@ -3976,66 +5177,102 @@ def render_header(ai_ready: bool, model_label: str, ai_message: str) -> None:
     )
     status_text = "AI ready for academics" if ai_ready else ai_message
     chip_class = "ready" if ai_ready else ("waiting" if "Add HF_TOKEN" in ai_message or "Streamlit secrets" in ai_message else "offline")
+    current_page_title = PAGE_DETAILS.get(st.session_state.active_page, {}).get("title", "Dashboard")
+    current_mode = "Local folder picker" if save_destination_mode() == "local" else "Browser download"
+    current_template = str(st.session_state.get("export_template", "Academic Classic"))
 
-    left, right = st.columns([2.1, 1], gap="large")
+    left, right = st.columns([1.72, 0.98], gap="large")
     with left:
         with st.container(border=True):
             st.markdown(
                 f"""
-                <div class="app-kicker">Hugyoku Command Center</div>
-                <div class="app-hero-title">{html_text(title)}</div>
-                <div class="app-card-subtitle">{html_text(subtitle)}</div>
+                <div class="app-hero-shell">
+                  <div class="app-card-topline">
+                    <span class="app-anchor-badge">HQ</span>
+                    <span class="app-tier-pill primary">Command Center</span>
+                  </div>
+                  <div class="app-hero-title">{html_text(title)}</div>
+                  <div class="app-hero-lead">{html_text(subtitle)}</div>
+                  <div class="app-hero-note">Focused workflows for research, drafting, review, and export.</div>
+                  <div class="app-luxury-rule"></div>
+                </div>
                 """,
                 unsafe_allow_html=True,
             )
-            render_tag_row(
+            render_kpi_row(
                 [
-                    "Dashboard",
-                    "Workspaces",
-                    "Source Lab",
-                    "Study Tools",
-                    "Developer",
-                    "History",
-                    "Settings",
+                    ("Current page", current_page_title),
+                    ("Export mode", current_mode),
+                    ("Workspace", str(workspace.get("name", "General Workspace"))),
                 ]
             )
+            action_a, action_b, action_c = st.columns([1.05, 1, 0.92], gap="small")
+            if action_a.button("Open Hugyoku", key="hero_open_hugyoku", type="primary", use_container_width=True):
+                go("hugyoku")
+            if action_b.button("Open Academics", key="hero_open_academics", use_container_width=True):
+                go("academics")
+            if action_c.button("Open Developer", key="hero_open_developer", use_container_width=True):
+                go("developer")
     with right:
         with st.container(border=True):
+            render_card_header(
+                "Live Control Panel",
+                "Real-time session status, model awareness, and operator context stay visible in one compact panel.",
+                "System Status",
+                anchor="AI",
+                tier="secondary",
+                compact=True,
+            )
             st.markdown(
                 f"<div class='app-status-pill {chip_class}'>{html_text(status_text)}</div>",
                 unsafe_allow_html=True,
             )
             render_meta_grid(
                 [
-                    ("Active workspace", str(workspace.get("name", "General Workspace"))),
                     ("Signed in as", st.session_state.auth_username or "No active user"),
-                    ("Role", st.session_state.auth_role or "None"),
                     ("Active model", model_label),
                 ]
             )
+            with st.expander("Session details", expanded=False):
+                render_meta_grid(
+                    [
+                        ("Role", st.session_state.auth_role or "None"),
+                        ("History entries", str(len(st.session_state.get("history_entries", [])))),
+                        ("Template", current_template),
+                    ]
+                )
             if st.button("Refresh AI Status", key="refresh_ai_status", use_container_width=True):
                 st.rerun()
 
 
 def render_sidebar(ai_ready: bool, model_label: str, ai_message: str) -> None:
     nav_items = [
-        ("dashboard", "01 Dashboard"),
-        ("workspaces", "02 Workspaces"),
-        ("academics", "03 Academics"),
-        ("developer", "04 Developer"),
-        ("history", "05 History"),
-        ("settings", "06 Settings"),
+        ("hugyoku", "01 Hugyoku"),
+        ("dashboard", "02 Dashboard"),
+        ("workspaces", "03 Workspaces"),
+        ("academics", "04 Academics"),
+        ("developer", "05 Developer"),
+        ("history", "06 History"),
+        ("settings", "07 Settings"),
     ]
     if can_access_page("admin"):
-        nav_items.append(("admin", "07 Admin"))
+        nav_items.append(("admin", "08 Admin"))
 
     with st.sidebar:
-        st.markdown("<div class='app-sidebar-brand'>Hugyoku</div>", unsafe_allow_html=True)
         st.markdown(
-            "<div class='app-sidebar-copy'>Premium study and utility desk with login-first access, grounded academic generators, workspace research, export workflows, and developer debugging support.</div>",
+            """
+            <div class="app-sidebar-brand-row">
+              <span class="app-anchor-badge">HY</span>
+              <div>
+                <div class="app-sidebar-brand">Hugyoku</div>
+                <div class="app-sidebar-copy">Private academic command desk for grounded research, drafting, exports, and developer support.</div>
+                <div class="app-sidebar-quiet">Compact navigation rail with live session context.</div>
+              </div>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
-        st.caption("The sidebar collapses automatically on smaller screens.")
+        st.markdown("<div class='app-nav-section'>Navigate</div>", unsafe_allow_html=True)
 
         academic_pages = {"academics", "quiz", "assignment", "essay", "activity", "document"}
         developer_pages = {"developer", "codefix"}
@@ -4057,82 +5294,538 @@ def render_sidebar(ai_ready: bool, model_label: str, ai_message: str) -> None:
 
         ensure_workspace_bootstrap()
         workspace_ids = list(st.session_state.workspaces.keys())
-        selected_workspace = st.selectbox(
-            "Active workspace",
-            options=workspace_ids,
-            index=workspace_ids.index(st.session_state.active_workspace_id),
-            format_func=workspace_option_label,
-            key="sidebar_workspace_selector",
-        )
-        if selected_workspace != st.session_state.active_workspace_id:
-            st.session_state.active_workspace_id = selected_workspace
-            st.rerun()
-
         with st.container(border=True):
-            st.markdown("**Educational use only**")
-            st.caption(
-                "Use the app for studying, drafting, and understanding source material. "
-                "Review outputs before submitting anything."
+            render_card_header(
+                "Workspace Focus",
+                "Switch context before generating, reviewing, or exporting anything.",
+                "Control",
+                anchor="WS",
+                tier="secondary",
+                compact=True,
             )
+            selected_workspace = st.selectbox(
+                "Active workspace",
+                options=workspace_ids,
+                index=workspace_ids.index(st.session_state.active_workspace_id),
+                format_func=workspace_option_label,
+                key="sidebar_workspace_selector",
+            )
+            if selected_workspace != st.session_state.active_workspace_id:
+                st.session_state.active_workspace_id = selected_workspace
+                st.rerun()
+            workspace = active_workspace()
+            render_kpi_row(
+                [
+                    ("Files", str(len(workspace.get("files", [])))),
+                    ("Images", str(len(workspace.get("images", [])))),
+                ]
+            )
+            st.caption("Your active workspace controls what gets grouped, cited, and exported.")
 
         with st.container(border=True):
-            st.markdown("**Signed In**")
-            st.write(st.session_state.auth_display_name or st.session_state.auth_username or "Unknown user")
-            st.caption(f"Role: {st.session_state.auth_role or 'none'}")
+            render_card_header(
+                "Session Control",
+                "Your identity, role, and model context are grouped here so the sidebar stays compact.",
+                "Access",
+                anchor="ID",
+                tier="tertiary",
+                compact=True,
+            )
+            render_meta_grid(
+                [
+                    ("User", st.session_state.auth_display_name or st.session_state.auth_username or "Unknown user"),
+                    ("Role", st.session_state.auth_role or "none"),
+                ]
+            )
+            st.caption("Use the app for studying, drafting, and understanding source material before submitting anything.")
             if st.button("Logout", key="sidebar_logout_button", use_container_width=True):
                 logout_current_user()
                 st.session_state.flash_message = "You have been logged out."
                 st.session_state.flash_level = "info"
                 st.rerun()
 
-        with st.container(border=True):
-            st.markdown("**AI Status**")
+        with st.expander("Session diagnostics", expanded=False):
+            st.caption("AI status")
             st.write("Ready" if ai_ready else ai_message)
             st.caption(model_label)
+            st.caption(f"Export mode: {'Local folder picker' if save_destination_mode() == 'local' else 'Browser download'}")
+
+
+def render_hugyoku_page(ai_ready: bool) -> None:
+    workspace = active_workspace()
+    doc_files = list(st.session_state.get("hugyoku_reference_docs") or [])
+    image_files = list(st.session_state.get("hugyoku_reference_images") or [])
+    output_sections = list(st.session_state.get("hugyoku_output_sections", []))
+    has_understanding = bool(st.session_state.hugyoku_understanding.strip())
+    has_result = bool(output_sections)
+    stage = int(st.session_state.get("hugyoku_stage", 1) or 1)
+    if stage >= 3 and has_result:
+        stage = max(stage, 3)
+    elif has_understanding:
+        stage = max(stage, 2)
+    else:
+        stage = 1
+    st.session_state.hugyoku_stage = stage
+
+    with st.container(border=True):
+        render_card_header(
+            PAGE_DETAILS["hugyoku"]["title"],
+            PAGE_DETAILS["hugyoku"]["subtitle"],
+            "Universal Flow",
+            anchor="HY",
+            tier="primary",
+        )
+        render_kpi_row(
+            [
+                ("Workspace", str(workspace.get("name", "General Workspace"))),
+                ("Docs", str(len(doc_files))),
+                ("Images", str(len(image_files))),
+                ("Status", "Result ready" if stage >= 3 else ("Understanding ready" if stage >= 2 else "Awaiting task")),
+            ]
+        )
+        st.caption("Flow: 1) Task intake -> 2) AI understanding and corrections -> 3) Final result, editing, and export.")
+
+    def persist_hugyoku_result(result_text: str, export_format: str, generation_note: str) -> None:
+        sections = build_hugyoku_sections(result_text)
+        output_title = guess_hugyoku_title(st.session_state.hugyoku_task_input, st.session_state.hugyoku_understanding, sections)
+        st.session_state.hugyoku_output_sections = sections
+        prime_hugyoku_section_widgets(sections)
+        st.session_state.hugyoku_output_raw = compile_hugyoku_sections(sections)
+        st.session_state.hugyoku_output_title = output_title
+        st.session_state.hugyoku_output_format = export_format
+        st.session_state.hugyoku_generation_note = generation_note
+        remember_output("Hugyoku", output_title, st.session_state.hugyoku_output_raw, "hugyoku", "hugyoku")
+
+    def run_understanding_analysis() -> None:
+        task_text = st.session_state.hugyoku_task_input.strip()
+        reference_bundle, issues, ocr_status = read_hugyoku_reference_bundle(doc_files, image_files, st.session_state.hugyoku_attachment_note)
+        for issue in issues:
+            st.warning(issue)
+        if not task_text and not reference_bundle:
+            st.warning("Add a task, a document, or an image first so Hugyoku has something to analyze.")
+            return
+        result, used_model = run_generation_with_details(
+            build_hugyoku_understanding_prompt(task_text, reference_bundle),
+            "hugyoku task understanding",
+        )
+        if result:
+            st.session_state.hugyoku_understanding = result
+            st.session_state.hugyoku_last_bundle = reference_bundle
+            st.session_state.hugyoku_last_ocr_status = ocr_status
+            st.session_state.hugyoku_stage = 2
+            st.session_state.hugyoku_refinement_round = 1
+            st.session_state.hugyoku_output_sections = []
+            st.session_state.hugyoku_output_raw = ""
+            st.session_state.hugyoku_output_title = ""
+            st.session_state.hugyoku_result_prompt = ""
+            st.session_state.hugyoku_output_format = detect_requested_export_format(task_text, result)
+            st.session_state.hugyoku_generation_note = f"Understanding prepared using {used_model or current_model_name() or 'the active model'}."
+            append_history_entry(
+                "analysis",
+                "Hugyoku understanding ready",
+                ocr_status or "Task understanding generated.",
+                "hugyoku",
+                active_workspace_name(),
+                "hugyoku",
+            )
+            st.session_state.flash_message = "Step 1 complete. Review the AI understanding in Step 2."
+            st.session_state.flash_level = "success"
+            st.rerun()
+
+    def run_understanding_revision() -> None:
+        refinement_prompt = st.session_state.hugyoku_refinement_prompt.strip()
+        if not refinement_prompt:
+            st.warning("Add a correction prompt first, or skip this step if the understanding is already correct.")
+            return
+        task_text = st.session_state.hugyoku_task_input.strip()
+        reference_bundle = st.session_state.hugyoku_last_bundle
+        if not reference_bundle:
+            reference_bundle, issues, ocr_status = read_hugyoku_reference_bundle(doc_files, image_files, st.session_state.hugyoku_attachment_note)
+            for issue in issues:
+                st.warning(issue)
+            st.session_state.hugyoku_last_bundle = reference_bundle
+            st.session_state.hugyoku_last_ocr_status = ocr_status
+        result, used_model = run_generation_with_details(
+            build_hugyoku_refinement_prompt(task_text, reference_bundle, st.session_state.hugyoku_understanding, refinement_prompt),
+            "hugyoku understanding revision",
+        )
+        if result:
+            st.session_state.hugyoku_understanding = result
+            st.session_state.hugyoku_stage = 2
+            st.session_state.hugyoku_refinement_round = max(int(st.session_state.hugyoku_refinement_round or 0), 0) + 1
+            st.session_state.hugyoku_output_sections = []
+            st.session_state.hugyoku_output_raw = ""
+            st.session_state.hugyoku_output_title = ""
+            st.session_state.hugyoku_result_prompt = ""
+            st.session_state.hugyoku_output_format = detect_requested_export_format(f"{task_text}\n{refinement_prompt}", result)
+            st.session_state.hugyoku_generation_note = f"Understanding refined using {used_model or current_model_name() or 'the active model'}."
+            st.session_state.hugyoku_refinement_prompt = ""
+            append_history_entry(
+                "analysis",
+                "Hugyoku understanding revised",
+                "The task understanding loop ran again with user corrections.",
+                "hugyoku",
+                active_workspace_name(),
+                "hugyoku",
+            )
+            st.session_state.flash_message = "Understanding updated. If it looks correct now, continue to the final result."
+            st.session_state.flash_level = "success"
+            st.rerun()
+
+    def run_final_generation() -> None:
+        task_text = st.session_state.hugyoku_task_input.strip()
+        reference_bundle = st.session_state.hugyoku_last_bundle
+        if not reference_bundle:
+            reference_bundle, issues, ocr_status = read_hugyoku_reference_bundle(doc_files, image_files, st.session_state.hugyoku_attachment_note)
+            for issue in issues:
+                st.warning(issue)
+            st.session_state.hugyoku_last_bundle = reference_bundle
+            st.session_state.hugyoku_last_ocr_status = ocr_status
+        export_format = detect_requested_export_format(
+            f"{task_text}\n{st.session_state.hugyoku_refinement_prompt}",
+            st.session_state.hugyoku_understanding,
+        )
+        result, used_model = run_generation_with_details(
+            build_hugyoku_generation_prompt(
+                task_text,
+                reference_bundle,
+                st.session_state.hugyoku_understanding,
+                export_format,
+                st.session_state.hugyoku_refinement_prompt.strip(),
+            ),
+            "hugyoku final output",
+        )
+        if result:
+            persist_hugyoku_result(
+                result,
+                export_format,
+                f"Final result generated using {used_model or current_model_name() or 'the active model'}.",
+            )
+            st.session_state.hugyoku_stage = 3
+            st.session_state.flash_message = "Final result generated. Step 3 is now ready for editing and export."
+            st.session_state.flash_level = "success"
+            st.rerun()
+
+    if has_result:
+        sync_hugyoku_sections_from_widgets()
+        compiled_output = st.session_state.hugyoku_output_raw.strip()
+        result_left, result_right = st.columns([1.05, 0.95], gap="large")
+        with result_left:
+            with st.container(border=True):
+                render_card_header(
+                    "Final Result",
+                    "This is now the main focus. Review the output here first, then export or refine it from the panel on the right.",
+                    "Step 4",
+                    anchor="RS",
+                    tier="primary",
+                )
+                render_preview_panel(
+                    "Output Preview",
+                    "The generated result stays pinned here so it is easy to see and review.",
+                    "Final output preview",
+                    compiled_output,
+                    height=500,
+                    empty_title="No result generated yet",
+                    empty_body="Generate the final result first. It will appear here once the draft is ready.",
+                    anchor="OP",
+                    tier="secondary",
+                )
+                if compiled_output:
+                    render_hugyoku_export_button(
+                        st.session_state.hugyoku_output_title or "Hugyoku Output",
+                        compiled_output,
+                        st.session_state.hugyoku_output_format,
+                    )
+        with result_right:
+            with st.container(border=True):
+                render_card_header(
+                    "Edit And Refine",
+                    "Adjust each section, change the format, or send one more prompt after you see the result.",
+                    "Controls",
+                    anchor="ED",
+                    tier="secondary",
+                )
+                st.text_input("Output title", key="hugyoku_output_title")
+                st.selectbox(
+                    "Export format",
+                    options=["docx", "pdf", "txt"],
+                    format_func=lambda value: value.upper(),
+                    key="hugyoku_output_format",
+                )
+                for index, section in enumerate(output_sections):
+                    heading_key = f"hugyoku_section_heading_{index}"
+                    content_key = f"hugyoku_section_content_{index}"
+                    if heading_key not in st.session_state:
+                        st.session_state[heading_key] = str(section.get("heading", "")).strip()
+                    if content_key not in st.session_state:
+                        st.session_state[content_key] = str(section.get("content", "")).strip()
+                    with st.expander(st.session_state.get(heading_key) or f"Section {index + 1}", expanded=index == 0):
+                        st.text_input("Section heading", key=heading_key)
+                        st.text_area("Section content", key=content_key, height=150)
+                row_a, row_b = st.columns(2, gap="small")
+                if row_a.button("Apply Section Edits", key="hugyoku_apply_section_edits", use_container_width=True, type="primary"):
+                    sync_hugyoku_sections_from_widgets()
+                    st.success("Section edits applied to the result preview.")
+                if row_b.button("Start New Hugyoku Task", key="hugyoku_reset_after_result", use_container_width=True):
+                    queue_reset("clear_hugyoku_workspace", "Hugyoku workflow reset. You can start a new task now.")
+                    st.rerun()
+                st.text_area(
+                    "Additional prompt after result",
+                    key="hugyoku_result_prompt",
+                    height=120,
+                    placeholder="Example: Make it more formal, shorten the answer, or convert it into a reviewer format.",
+                )
+                refine_a, refine_b = st.columns(2, gap="small")
+                if refine_a.button("Regenerate With Additional Prompt", key="hugyoku_regenerate_output", use_container_width=True, type="secondary", disabled=not ai_ready):
+                    additional_prompt = st.session_state.hugyoku_result_prompt.strip()
+                    if not additional_prompt:
+                        st.warning("Add an additional prompt first so Hugyoku knows what to improve.")
+                    else:
+                        sync_hugyoku_sections_from_widgets()
+                        current_body = st.session_state.hugyoku_output_raw
+                        revision_prompt = f"{additional_prompt}\n\nCurrent editable draft:\n{current_body}"
+                        result, used_model = run_generation_with_details(
+                            build_hugyoku_generation_prompt(
+                                st.session_state.hugyoku_task_input.strip(),
+                                st.session_state.hugyoku_last_bundle,
+                                st.session_state.hugyoku_understanding,
+                                st.session_state.hugyoku_output_format,
+                                revision_prompt,
+                            ),
+                            "hugyoku refined output",
+                        )
+                        if result:
+                            persist_hugyoku_result(
+                                result,
+                                st.session_state.hugyoku_output_format,
+                                f"Result refined using {used_model or current_model_name() or 'the active model'}.",
+                            )
+                            st.session_state.hugyoku_stage = 3
+                            st.session_state.hugyoku_result_prompt = ""
+                            st.session_state.flash_message = "The final result was refined and updated."
+                            st.session_state.flash_level = "success"
+                            st.rerun()
+                if refine_b.button("Save Current Draft To Workspace", key="hugyoku_save_current_draft", use_container_width=True):
+                    sync_hugyoku_sections_from_widgets()
+                    remember_output(
+                        "Hugyoku Draft",
+                        st.session_state.hugyoku_output_title or "Hugyoku Draft",
+                        st.session_state.hugyoku_output_raw,
+                        "hugyoku",
+                        "hugyoku",
+                    )
+                    st.success("Current Hugyoku draft saved into the active workspace history.")
+                with st.expander("Result notes", expanded=False):
+                    render_route_block(
+                        "Detected export route",
+                        f"{st.session_state.hugyoku_output_format.upper()} output ready for {'local save' if save_destination_mode() == 'local' else 'browser download'}.",
+                    )
+                    render_route_block(
+                        "Why this draft exists",
+                        st.session_state.hugyoku_generation_note or "No generation note yet.",
+                    )
+
+    with st.expander("1. Task intake", expanded=stage == 1):
+        with st.container(border=True):
+            render_card_header(
+                "Task Intake",
+                "Describe the task and attach anything the AI should read first. Keep this focused on the assignment itself.",
+                "Step 1",
+                anchor="IN",
+                tier="secondary",
+            )
+            st.text_area(
+                "Input task",
+                key="hugyoku_task_input",
+                height=160,
+                placeholder="Example: Make me an essay about Aristotle's life and submit it as a Word file. Include introduction, key contributions, and conclusion.",
+            )
+            upload_left, upload_right = st.columns(2, gap="small")
+            with upload_left:
+                st.file_uploader(
+                    "Insert reference files",
+                    type=["docx", "pdf", "txt", "md"],
+                    accept_multiple_files=True,
+                    key="hugyoku_reference_docs",
+                    help="Attach assignment sheets, rubrics, notes, or source documents.",
+                )
+            with upload_right:
+                st.file_uploader(
+                    "Insert image",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    accept_multiple_files=True,
+                    key="hugyoku_reference_images",
+                    help="Attach screenshots, worksheet images, or photo references.",
+                )
+            st.text_area(
+                "Attachment note (optional)",
+                key="hugyoku_attachment_note",
+                height=85,
+                placeholder="Use this only if the attachments need extra context before analysis.",
+            )
+            action_a, action_b = st.columns(2, gap="small")
+            if action_a.button("Analyze Task Understanding", key="hugyoku_analyze_task", use_container_width=True, type="primary", disabled=not ai_ready):
+                run_understanding_analysis()
+            if action_b.button("Reset Hugyoku Flow", key="hugyoku_clear_workspace", use_container_width=True):
+                queue_reset("clear_hugyoku_workspace", "Hugyoku workflow cleared.")
+                st.rerun()
+
+    if stage >= 2 and has_understanding:
+        with st.expander("2. Review AI understanding", expanded=stage == 2):
+            top_left, top_right = st.columns([1.08, 0.92], gap="large")
+            with top_left:
+                with st.container(border=True):
+                    render_preview_panel(
+                        "AI Understanding",
+                        "Read this first. If the AI got the task wrong, use the correction box below. If it got the task right, continue to the final result.",
+                        "Understanding preview",
+                        st.session_state.hugyoku_understanding,
+                        height=300,
+                        empty_title="No understanding yet",
+                        empty_body="Start from task intake first.",
+                        anchor="UA",
+                        tier="secondary",
+                    )
+            with top_right:
+                with st.container(border=True):
+                    render_card_header(
+                        "Quick Summary",
+                        "Use this short summary to confirm whether the AI understood the request correctly.",
+                        "Step 2",
+                        anchor="CF",
+                        tier="tertiary",
+                    )
+                    render_meta_grid(
+                        [
+                            ("Requested output", extract_section_value(st.session_state.hugyoku_understanding, ["Requested Output"]) or "Not analyzed yet"),
+                            ("Requested format", (extract_section_value(st.session_state.hugyoku_understanding, ["Requested File Format"]) or st.session_state.hugyoku_output_format).upper()),
+                        ]
+                    )
+                    render_route_block(
+                        "Task summary",
+                        extract_section_value(st.session_state.hugyoku_understanding, ["Task Summary"]) or "No task summary yet.",
+                    )
+                    with st.expander("More analysis notes", expanded=False):
+                        render_route_block(
+                            "Important requirements",
+                            extract_section_value(st.session_state.hugyoku_understanding, ["Important Requirements"]) or "No requirements captured yet.",
+                        )
+                        render_route_block(
+                            "Missing or uncertain parts",
+                            extract_section_value(st.session_state.hugyoku_understanding, ["Missing or Uncertain Parts"]) or "No missing parts were flagged.",
+                        )
+                        render_route_block("OCR status", st.session_state.hugyoku_last_ocr_status or "No image analysis has been run yet.")
+
+            with st.container(border=True):
+                render_card_header(
+                    "Correct Or Continue",
+                    "If may mali, ilagay mo dito ang correction. Kung tama na, diretso ka na sa final result.",
+                    "Next Action",
+                    anchor="NX",
+                    tier="secondary",
+                )
+                st.text_area(
+                    "Correction or clarification prompt",
+                    key="hugyoku_refinement_prompt",
+                    height=120,
+                    placeholder="Example: Focus only on the significance of the name, keep it concise, and submit it as DOCX.",
+                )
+                action_a, action_b = st.columns(2, gap="small")
+                if action_a.button("Revise Understanding", key="hugyoku_revise_understanding", use_container_width=True, type="secondary", disabled=not ai_ready):
+                    run_understanding_revision()
+                if action_b.button("Generate Final Result", key="hugyoku_generate_result", use_container_width=True, type="primary", disabled=not ai_ready):
+                    run_final_generation()
 
 
 def render_dashboard() -> None:
     workspace = active_workspace()
     paths = folder_path_lines()
+    current_mode = save_destination_mode()
+    picker_ready = local_folder_picker_available()
 
     left, right = st.columns([1.15, 0.85], gap="large")
     with left:
         with st.container(border=True):
             render_card_header(
                 "Profile Section",
-                "Set your identity, export routing, and output defaults for the current session.",
+                "Set your identity, choose how exports should behave, and keep the dashboard disciplined with compact progressive controls.",
                 "Dashboard Identity",
+                anchor="ID",
+                tier="primary",
             )
-            st.text_input("Enter your name", key="profile_name_input", placeholder="Name to attach to exports")
-            st.checkbox("Add date today", key="profile_include_date_input")
+            render_kpi_row(
+                [
+                    ("Identity", st.session_state.saved_name or "Session default"),
+                    ("Date stamp", "Enabled" if st.session_state.profile_include_date_input else "Off"),
+                    ("Destination", "Local" if st.session_state.profile_save_destination_mode_input == "local" else "Browser"),
+                ]
+            )
+            identity_left, identity_right = st.columns([1.35, 0.65], gap="small")
+            with identity_left:
+                st.text_input("Enter your name", key="profile_name_input", placeholder="Name to attach to exports")
+            with identity_right:
+                st.checkbox("Add date today", key="profile_include_date_input")
 
-            folder_col, pick_col, clear_col = st.columns([1.7, 0.9, 0.8], gap="small")
-            folder_col.text_input(
-                "Selected save folder",
-                value=st.session_state.profile_export_root_path_input or "",
-                disabled=True,
-                placeholder="No local folder selected yet",
-            )
-            if pick_col.button("Choose Folder", key="choose_export_folder", use_container_width=True):
-                try:
-                    selected_folder = pick_local_folder()
-                    if selected_folder:
-                        queue_export_root_selection(selected_folder)
+            with st.expander("Save Destination", expanded=True):
+                st.radio(
+                    "Save destination",
+                    options=["browser", "local"],
+                    format_func=lambda value: (
+                        "Browser Download (Mobile + PC Recommended)"
+                        if value == "browser"
+                        else "Local Folder Picker (Desktop Only)"
+                    ),
+                    key="profile_save_destination_mode_input",
+                    horizontal=True,
+                )
+
+                if st.session_state.profile_save_destination_mode_input == "browser":
+                    render_route_block(
+                        "Save behavior",
+                        "Works on both mobile and PC.\nTap the download button and let your browser save the file to your device.",
+                    )
+                    render_route_block("Download route", browser_export_label())
+                else:
+                    folder_col, pick_col, clear_col = st.columns([1.7, 0.9, 0.8], gap="small")
+                    folder_col.text_input(
+                        "Selected local folder",
+                        value=st.session_state.profile_export_root_path_input or "",
+                        disabled=True,
+                        placeholder="No local folder selected yet",
+                    )
+                    if pick_col.button(
+                        "Choose Folder",
+                        key="choose_export_folder",
+                        use_container_width=True,
+                        disabled=not picker_ready,
+                    ):
+                        try:
+                            selected_folder = pick_local_folder()
+                            if selected_folder:
+                                queue_export_root_selection(selected_folder)
+                                st.rerun()
+                        except Exception as exc:
+                            st.warning(str(exc))
+                    if clear_col.button("Clear Folder", key="clear_export_folder", use_container_width=True):
+                        queue_export_root_selection(None)
                         st.rerun()
-                except Exception as exc:
-                    st.warning(str(exc))
-            if clear_col.button("Clear Folder", key="clear_export_folder", use_container_width=True):
-                queue_export_root_selection(None)
-                st.rerun()
 
-            st.markdown("#### Output Options")
-            opt_left, opt_right = st.columns(2, gap="small")
-            with opt_left:
-                st.checkbox("Include saved name in export", key="profile_output_include_name_input")
-                st.checkbox("Include date in export", key="profile_output_include_date_input")
-            with opt_right:
-                st.checkbox("Include essay heading suggestion", key="profile_essay_include_heading_input")
-                st.checkbox("Include self-check tip", key="profile_essay_include_tip_input")
+                    if picker_ready:
+                        render_route_block(
+                            "Desktop save behavior",
+                            "Exports save directly into the selected folder with automatic tool subfolders.",
+                        )
+                    else:
+                        st.info("Local folder picking is not available here, so browser download is the cross-device fallback.")
+
+            with st.expander("Output Options", expanded=False):
+                opt_left, opt_right = st.columns(2, gap="small")
+                with opt_left:
+                    st.checkbox("Include saved name in export", key="profile_output_include_name_input")
+                    st.checkbox("Include date in export", key="profile_output_include_date_input")
+                with opt_right:
+                    st.checkbox("Include essay heading suggestion", key="profile_essay_include_heading_input")
+                    st.checkbox("Include self-check tip", key="profile_essay_include_tip_input")
 
             action_left, action_right = st.columns(2, gap="small")
             if action_left.button("Save Profile", use_container_width=True, type="primary", key="dashboard_save_profile"):
@@ -4146,8 +5839,10 @@ def render_dashboard() -> None:
         with st.container(border=True):
             render_card_header(
                 "Active Workspace Snapshot",
-                "Track the current project workspace, uploaded materials, output template, and local export routing.",
+                "Track the current project workspace, uploaded materials, output template, and export routing in one place.",
                 "Workspace Overview",
+                anchor="WS",
+                tier="secondary",
             )
             render_meta_grid(
                 [
@@ -4157,17 +5852,19 @@ def render_dashboard() -> None:
                     ("Saved outputs", str(len(workspace.get("outputs", [])))),
                 ]
             )
-            render_route_block("Save root folder", paths["main"])
+            render_route_block(
+                "Save destination",
+                paths["main"] if current_mode == "local" else "Browser download to the user's device",
+            )
+            render_route_block(
+                "Current mode",
+                "Local folder picker" if current_mode == "local" else "Browser download (mobile + PC)",
+            )
             render_route_block("Selected template", str(st.session_state.get("export_template", "Academic Classic")))
 
-    quick_left, quick_right = st.columns(2, gap="large")
-    with quick_left:
-        with st.container(border=True):
-            render_card_header(
-                "Quick Launch",
-                "Move directly into the major work areas without leaving the dashboard.",
-                "Next Step",
-            )
+    with st.expander("Additional dashboard panels", expanded=False):
+        extra_a, extra_b, extra_c, extra_d = st.tabs(["Quick Launch", "Recent Activity", "Routing", "Outputs"])
+        with extra_a:
             first_col, second_col = st.columns(2, gap="small")
             if first_col.button("Open Workspaces", key="dashboard_open_workspaces", use_container_width=True, type="primary"):
                 go("workspaces")
@@ -4178,34 +5875,12 @@ def render_dashboard() -> None:
                 go("developer")
             if fourth_col.button("Open Settings", key="dashboard_open_settings", use_container_width=True):
                 go("settings")
-
-    with quick_right:
-        with st.container(border=True):
-            render_card_header(
-                "Recent Activity",
-                "The newest uploads, generations, and exports stay visible here for quick context.",
-                "Session Feed",
-            )
+        with extra_b:
             render_history_snippets(limit=4)
-
-    detail_left, detail_right = st.columns(2, gap="large")
-    with detail_left:
-        with st.container(border=True):
-            render_card_header(
-                "Export Folder Routing",
-                "Every generator can save directly into the selected local folder or fall back to browser downloads.",
-                "Download Structure",
-            )
+        with extra_c:
             render_route_block("Academics suite", "\n".join([paths["reviewer"], paths["flashcards"], paths["practice_test"], paths["rubric"], paths["batch"]]))
             render_route_block("Developer suite", paths["codefix"])
-
-    with detail_right:
-        with st.container(border=True):
-            render_card_header(
-                "Workspace Outputs",
-                "Generated results stay attached to the active workspace for easier reuse.",
-                "Saved Outputs",
-            )
+        with extra_d:
             render_workspace_outputs(limit=4)
 
 
@@ -4216,6 +5891,8 @@ def render_workspaces_page(ai_ready: bool) -> None:
             PAGE_DETAILS["workspaces"]["title"],
             PAGE_DETAILS["workspaces"]["subtitle"],
             "Workspace Manager",
+            anchor="WS",
+            tier="primary",
         )
         render_tag_row(["Project Workspaces", "Multi-File Upload", "Screenshot Intake", "Workspace Analysis"])
 
@@ -4337,11 +6014,12 @@ def render_workspaces_page(ai_ready: bool) -> None:
                     st.rerun()
                 else:
                     st.warning("Upload at least one image first.")
-            if workspace.get("images"):
-                preview_images = [item.get("bytes") for item in workspace.get("images", [])[:3]]
-                st.image(preview_images, width=180)
-            else:
-                st.caption("No screenshots attached yet.")
+            with st.expander("Preview attached screenshots", expanded=False):
+                if workspace.get("images"):
+                    preview_images = [item.get("bytes") for item in workspace.get("images", [])[:3]]
+                    st.image(preview_images, width=180)
+                else:
+                    st.caption("No screenshots attached yet.")
 
     with bottom_right:
         with st.container(border=True):
@@ -4379,7 +6057,13 @@ def render_workspaces_page(ai_ready: bool) -> None:
                         st.session_state.workspace_analysis_result = result
                         remember_output("Workspace Analysis", f"{workspace['name']} Workspace Analysis", result, "workspaces", "workspace_analysis")
                         st.success("Workspace analysis ready.")
-            st.text_area("Analysis output", value=st.session_state.workspace_analysis_result, height=260, disabled=True)
+            if st.session_state.workspace_analysis_result.strip():
+                st.text_area("Analysis output", value=st.session_state.workspace_analysis_result, height=260, disabled=True)
+            else:
+                render_route_block(
+                    "No analysis yet",
+                    "Generate the workspace analysis first. This panel stays compact until there is a result to review.",
+                )
             if st.session_state.workspace_analysis_result.strip():
                 render_download_button(
                     f"{workspace['name']} Workspace Analysis",
@@ -4388,32 +6072,34 @@ def render_workspaces_page(ai_ready: bool) -> None:
                     "workspace_analysis",
                     "clear_workspace_analysis_workspace",
                 )
+    with st.expander("Additional workspace panels", expanded=False):
+        list_left, list_right = st.columns(2, gap="large")
+        with list_left:
+            with st.container(border=True):
+                render_card_header(
+                    "Source Inventory",
+                    "A quick list of the file assets currently attached to the active workspace.",
+                    "Inventory",
+                    compact=True,
+                )
+                if workspace.get("files"):
+                    for file_entry in workspace.get("files", [])[:10]:
+                        render_route_block(
+                            str(file_entry.get("name", "source.txt")),
+                            f"{file_entry.get('words', 0)} words • added {file_entry.get('added_at', '-')}",
+                        )
+                else:
+                    st.caption("No source files in this workspace yet.")
 
-    list_left, list_right = st.columns(2, gap="large")
-    with list_left:
-        with st.container(border=True):
-            render_card_header(
-                "Source Inventory",
-                "A quick list of the file assets currently attached to the active workspace.",
-                "Inventory",
-            )
-            if workspace.get("files"):
-                for file_entry in workspace.get("files", [])[:10]:
-                    render_route_block(
-                        str(file_entry.get("name", "source.txt")),
-                        f"{file_entry.get('words', 0)} words • added {file_entry.get('added_at', '-')}",
-                    )
-            else:
-                st.caption("No source files in this workspace yet.")
-
-    with list_right:
-        with st.container(border=True):
-            render_card_header(
-                "Workspace Outputs",
-                "Generated outputs remain attached to the active workspace for quick reuse.",
-                "Outputs",
-            )
-            render_workspace_outputs(limit=6)
+        with list_right:
+            with st.container(border=True):
+                render_card_header(
+                    "Workspace Outputs",
+                    "Generated outputs remain attached to the active workspace for quick reuse.",
+                    "Outputs",
+                    compact=True,
+                )
+                render_workspace_outputs(limit=6)
 
 
 def render_source_lab_tab(ai_ready: bool, workspace: dict[str, object], source_bundle: str) -> None:
@@ -4441,14 +6127,27 @@ def render_source_lab_tab(ai_ready: bool, workspace: dict[str, object], source_b
                     st.rerun()
                 else:
                     st.warning("Upload at least one file first.")
-            st.text_area("Merged source preview", value=source_bundle, height=330, disabled=True)
+            with st.expander("Review merged source preview", expanded=False):
+                if source_bundle.strip():
+                    st.text_area("Merged source preview", value=source_bundle, height=280, disabled=True)
+                else:
+                    render_route_block(
+                        "No source bundle yet",
+                        "Add files, notes, or screenshots to the active workspace first, then the merged source preview will appear here.",
+                    )
 
     with src_right:
         with st.container(border=True):
-            render_card_header(
+            render_preview_panel(
                 "Source-Grounded Answers",
                 "Generate a grounded analysis with explicit file citations based on the active workspace sources.",
-                "Grounded Analysis",
+                "Grounded analysis output",
+                st.session_state.source_lab_analysis,
+                height=310,
+                empty_title="No grounded analysis yet",
+                empty_body="Run the grounded analysis action after adding workspace material. This preview will stay compact until there is a real result to review.",
+                anchor="GA",
+                tier="secondary",
             )
             if st.button(
                 "Generate Grounded Analysis",
@@ -4474,7 +6173,6 @@ def render_source_lab_tab(ai_ready: bool, workspace: dict[str, object], source_b
                         st.session_state.source_lab_analysis = result
                         remember_output("Grounded Analysis", f"{workspace['name']} Grounded Analysis", result, "academics", "grounded_answer")
                         st.success("Grounded analysis ready.")
-            st.text_area("Grounded analysis output", value=st.session_state.source_lab_analysis, height=330, disabled=True)
             if st.session_state.source_lab_analysis.strip():
                 render_download_button(
                     f"{workspace['name']} Grounded Analysis",
@@ -4522,7 +6220,13 @@ def render_source_lab_tab(ai_ready: bool, workspace: dict[str, object], source_b
                         st.session_state.source_lab_answer = result
                         remember_output("Document Q&A", f"{workspace['name']} Q&A", result, "academics", "documentqa")
                         st.success("Document Q&A answer ready.")
-            st.text_area("Q&A answer", value=st.session_state.source_lab_answer, height=280, disabled=True)
+            if st.session_state.source_lab_answer.strip():
+                st.text_area("Q&A answer", value=st.session_state.source_lab_answer, height=250, disabled=True)
+            else:
+                render_route_block(
+                    "No answer yet",
+                    "Enter a source-grounded question first. The answer preview will only expand once there is a result.",
+                )
             if st.session_state.source_lab_answer.strip():
                 render_download_button(
                     f"{workspace['name']} Document Answer",
@@ -4581,8 +6285,17 @@ def render_study_tools_tab(ai_ready: bool, workspace: dict[str, object], source_
                         st.success("Reviewer notes ready.")
         with right:
             with st.container(border=True):
-                render_card_header("Reviewer Preview", "Review the notes before exporting.", "Preview")
-                st.text_area("Reviewer output", value=st.session_state.reviewer_response, height=360, disabled=True)
+                render_preview_panel(
+                    "Reviewer Preview",
+                    "Review the notes before exporting.",
+                    "Reviewer output",
+                    st.session_state.reviewer_response,
+                    height=340,
+                    empty_title="No reviewer notes yet",
+                    empty_body="Generate reviewer notes from the left panel. The preview appears only once there is content worth reviewing.",
+                    anchor="RV",
+                    tier="secondary",
+                )
                 if st.session_state.reviewer_response.strip():
                     render_download_button(
                         f"{workspace['name']} Reviewer Notes",
@@ -4619,8 +6332,17 @@ def render_study_tools_tab(ai_ready: bool, workspace: dict[str, object], source_
                         st.success("Flashcards ready.")
         with right:
             with st.container(border=True):
-                render_card_header("Flashcard Preview", "Review the generated cards before export.", "Preview")
-                st.text_area("Flashcard output", value=st.session_state.flashcard_response, height=360, disabled=True)
+                render_preview_panel(
+                    "Flashcard Preview",
+                    "Review the generated cards before export.",
+                    "Flashcard output",
+                    st.session_state.flashcard_response,
+                    height=340,
+                    empty_title="No flashcards yet",
+                    empty_body="Generate flashcards from the left panel. The preview will appear here once the deck is ready.",
+                    anchor="FC",
+                    tier="secondary",
+                )
                 if st.session_state.flashcard_response.strip():
                     render_download_button(
                         f"{workspace['name']} Flashcards",
@@ -4658,8 +6380,17 @@ def render_study_tools_tab(ai_ready: bool, workspace: dict[str, object], source_
                         st.success("Practice test ready.")
         with right:
             with st.container(border=True):
-                render_card_header("Practice Test Preview", "Review the generated practice test before export.", "Preview")
-                st.text_area("Practice test output", value=st.session_state.practice_test_response, height=360, disabled=True)
+                render_preview_panel(
+                    "Practice Test Preview",
+                    "Review the generated practice test before export.",
+                    "Practice test output",
+                    st.session_state.practice_test_response,
+                    height=340,
+                    empty_title="No practice test yet",
+                    empty_body="Generate the practice test first. The output preview and export controls will appear here after that.",
+                    anchor="PT",
+                    tier="secondary",
+                )
                 if st.session_state.practice_test_response.strip():
                     render_download_button(
                         f"{workspace['name']} Practice Test",
@@ -4706,8 +6437,17 @@ def render_study_tools_tab(ai_ready: bool, workspace: dict[str, object], source_
                             st.success("Answer review ready.")
         with right:
             with st.container(border=True):
-                render_card_header("Answer Checker Preview", "Review the score, gaps, and improved answer.", "Preview")
-                st.text_area("Answer checker output", value=st.session_state.answer_checker_response, height=420, disabled=True)
+                render_preview_panel(
+                    "Answer Checker Preview",
+                    "Review the score, gaps, and improved answer.",
+                    "Answer checker output",
+                    st.session_state.answer_checker_response,
+                    height=390,
+                    empty_title="No answer review yet",
+                    empty_body="Submit a question and a student answer first. The review panel stays lightweight until there is a scored response.",
+                    anchor="AN",
+                    tier="secondary",
+                )
                 if st.session_state.answer_checker_response.strip():
                     render_download_button(
                         f"{workspace['name']} Answer Check",
@@ -4762,8 +6502,17 @@ def render_writing_studio_tab(ai_ready: bool, workspace: dict[str, object], sour
                             st.success("Rubric-aligned draft ready.")
         with right:
             with st.container(border=True):
-                render_card_header("Rubric Draft Preview", "Review the aligned draft and rubric notes before export.", "Preview")
-                st.text_area("Rubric mode output", value=st.session_state.rubric_response, height=420, disabled=True)
+                render_preview_panel(
+                    "Rubric Draft Preview",
+                    "Review the aligned draft and rubric notes before export.",
+                    "Rubric mode output",
+                    st.session_state.rubric_response,
+                    height=390,
+                    empty_title="No rubric draft yet",
+                    empty_body="Generate a rubric-aligned draft from the left panel. The review and export controls will appear here once the draft is ready.",
+                    anchor="RB",
+                    tier="secondary",
+                )
                 if st.session_state.rubric_response.strip():
                     render_download_button(
                         st.session_state.rubric_title_input.strip() or f"{workspace['name']} Rubric Draft",
@@ -4805,8 +6554,17 @@ def render_writing_studio_tab(ai_ready: bool, workspace: dict[str, object], sour
                         st.success("Batch output ready.")
         with right:
             with st.container(border=True):
-                render_card_header("Batch Output Preview", "Review the combined output package before export.", "Preview")
-                st.text_area("Batch output", value=st.session_state.batch_response, height=420, disabled=True)
+                render_preview_panel(
+                    "Batch Output Preview",
+                    "Review the combined output package before export.",
+                    "Batch output",
+                    st.session_state.batch_response,
+                    height=390,
+                    empty_title="No batch output yet",
+                    empty_body="Generate the batch package from the left panel. The preview stays compact until the combined output is ready.",
+                    anchor="BT",
+                    tier="secondary",
+                )
                 if st.session_state.batch_response.strip():
                     render_download_button(
                         st.session_state.batch_topic_input.strip() or f"{workspace['name']} Batch Output",
@@ -4869,11 +6627,12 @@ def render_export_center_tab() -> None:
                 "Routing",
             )
             paths = folder_path_lines()
-            render_route_block("Reviewer", paths["reviewer"])
-            render_route_block("Flashcards", paths["flashcards"])
-            render_route_block("Practice Test", paths["practice_test"])
-            render_route_block("Rubric Draft", paths["rubric"])
-            render_route_block("Batch Output", paths["batch"])
+            with st.expander("Open route list", expanded=False):
+                render_route_block("Reviewer", paths["reviewer"])
+                render_route_block("Flashcards", paths["flashcards"])
+                render_route_block("Practice Test", paths["practice_test"])
+                render_route_block("Rubric Draft", paths["rubric"])
+                render_route_block("Batch Output", paths["batch"])
 
 
 def render_academics_hub(ai_ready: bool) -> None:
@@ -4882,10 +6641,12 @@ def render_academics_hub(ai_ready: bool) -> None:
     with st.container(border=True):
         render_card_header(
             PAGE_DETAILS["academics"]["title"],
-            "Use the active workspace as the source of truth, then branch into Source Lab, Study Tools, Writing Studio, and Export Center.",
+            "Use the active workspace as the source of truth, then branch into one focused study flow at a time.",
             "Academics Suite",
+            anchor="AC",
+            tier="primary",
         )
-        render_meta_grid(
+        render_kpi_row(
             [
                 ("Workspace", str(workspace.get("name", "General Workspace"))),
                 ("Source files", str(len(workspace.get("files", [])))),
@@ -4893,6 +6654,11 @@ def render_academics_hub(ai_ready: bool) -> None:
                 ("Template", str(st.session_state.get("export_template", "Academic Classic"))),
             ]
         )
+        with st.expander("Workspace context", expanded=False):
+            render_route_block(
+                "Current source bundle",
+                f"{len(source_bundle)} characters ready for prompting" if source_bundle else "No files or notes have been attached to this workspace yet.",
+            )
 
     source_tab, study_tab, writing_tab, export_tab = st.tabs(
         ["Source Lab", "Study Tools", "Writing Studio", "Export Center"]
@@ -4913,10 +6679,20 @@ def render_developer_hub(ai_ready: bool) -> None:
     with st.container(border=True):
         render_card_header(
             PAGE_DETAILS["developer"]["title"],
-            "Keep code generation and debugging separate from the academic tools. The stack guide below is tuned to the active model so we can reduce weaker prompts and overconfident outputs.",
+            "Keep code generation and debugging separate from the academic tools, with one focused workflow visible at a time.",
             "Developer Suite",
+            anchor="DV",
+            tier="primary",
         )
-        render_tag_row(["Code Error Fixer", "Code Generator", stack_profile["profile_name"], "Code Diff View", "Debug Notes"])
+        render_kpi_row(
+            [
+                ("Active model", current_model_name() or "No active model"),
+                ("Stack profile", str(stack_profile["profile_name"])),
+                ("Code focus", "High" if stack_profile["is_coder_model"] else "Moderate"),
+            ]
+        )
+        with st.expander("Capability context", expanded=False):
+            st.caption(stack_profile["note"])
 
     fix_tab, generator_tab, stack_tab, selftest_tab, compare_tab, diff_tab, notes_tab = st.tabs(
         ["Code Fixer", "Code Generator", "Stack Guide", "Self-Test", "Model Compare", "Code Diff View", "Debug Notes"]
@@ -4985,12 +6761,17 @@ def render_developer_hub(ai_ready: bool) -> None:
                     st.rerun()
         with right:
             with st.container(border=True):
-                render_card_header(
+                render_preview_panel(
                     "Code Fix Preview",
                     "The fix, explanation, and next checks appear here.",
-                    "Preview",
+                    "Fixed result",
+                    st.session_state.codefix_response,
+                    height=430,
+                    empty_title="No code fix yet",
+                    empty_body="Generate the fix from the left panel first. The preview and export controls will appear only when there is a real debugging result to inspect.",
+                    anchor="FX",
+                    tier="secondary",
                 )
-                st.text_area("Fixed result", value=st.session_state.codefix_response, height=460, disabled=True)
                 if st.session_state.codefix_response.strip():
                     export_title = st.session_state.codefix_title.strip() or f"{selected_fix_stack or 'Code'} Code Fix"
                     render_download_button(
@@ -5083,12 +6864,17 @@ def render_developer_hub(ai_ready: bool) -> None:
                     st.rerun()
         with right:
             with st.container(border=True):
-                render_card_header(
+                render_preview_panel(
                     "Generated Code Preview",
                     "Review the generated code and notes before exporting or re-prompting.",
-                    "Preview",
+                    "Generated code output",
+                    st.session_state.codegen_response,
+                    height=430,
+                    empty_title="No generated code yet",
+                    empty_body="Describe the build or attach reference material first. The preview area expands when there is generated code to review.",
+                    anchor="CG",
+                    tier="secondary",
                 )
-                st.text_area("Generated code output", value=st.session_state.codegen_response, height=460, disabled=True)
                 if st.session_state.codegen_response.strip():
                     export_title = st.session_state.codegen_title.strip() or f"{selected_codegen_stack} Code Output"
                     render_download_button(
@@ -5149,10 +6935,16 @@ def render_developer_hub(ai_ready: bool) -> None:
                     st.rerun()
         with right:
             with st.container(border=True):
-                render_card_header(
+                render_preview_panel(
                     "Self-Test Result",
                     "This shows the latest self-test output and the exact requested model id used for that run.",
-                    "Result",
+                    "Self-test output",
+                    st.session_state.selftest_response,
+                    height=300,
+                    empty_title="No self-test yet",
+                    empty_body="Run the self-test from the left panel first. The result area remains compact until there is an actual benchmark response.",
+                    anchor="ST",
+                    tier="secondary",
                 )
                 render_meta_grid(
                     [
@@ -5161,7 +6953,6 @@ def render_developer_hub(ai_ready: bool) -> None:
                         ("Last generation label", st.session_state.last_generation_label or "None"),
                     ]
                 )
-                st.text_area("Self-test output", value=st.session_state.selftest_response, height=360, disabled=True)
 
     with compare_tab:
         left, right = st.columns([1.02, 0.98], gap="large")
@@ -5217,20 +7008,30 @@ def render_developer_hub(ai_ready: bool) -> None:
             model_col_a, model_col_b = st.columns(2, gap="small")
             with model_col_a:
                 with st.container(border=True):
-                    render_card_header(
+                    render_preview_panel(
                         "Model A Output",
                         st.session_state.compare_used_model_a or "No comparison run yet.",
-                        "Output A",
+                        "Compare output A",
+                        st.session_state.compare_output_a,
+                        height=300,
+                        empty_title="No Model A output yet",
+                        empty_body="Run the model comparison first. This side stays compact until the first output arrives.",
+                        anchor="A",
+                        tier="secondary",
                     )
-                    st.text_area("Compare output A", value=st.session_state.compare_output_a, height=340, disabled=True)
             with model_col_b:
                 with st.container(border=True):
-                    render_card_header(
+                    render_preview_panel(
                         "Model B Output",
                         st.session_state.compare_used_model_b or "No comparison run yet.",
-                        "Output B",
+                        "Compare output B",
+                        st.session_state.compare_output_b,
+                        height=300,
+                        empty_title="No Model B output yet",
+                        empty_body="Run the model comparison first. This side stays compact until the second output arrives.",
+                        anchor="B",
+                        tier="secondary",
                     )
-                    st.text_area("Compare output B", value=st.session_state.compare_output_b, height=340, disabled=True)
 
     with diff_tab:
         fixed_version = extract_section_value(st.session_state.codefix_response, ["Fixed Version"])
@@ -5287,6 +7088,8 @@ def render_history_page() -> None:
             PAGE_DETAILS["history"]["title"],
             PAGE_DETAILS["history"]["subtitle"],
             "History",
+            anchor="HS",
+            tier="primary",
         )
         render_tag_row(["Uploads", "Generations", "Exports", "Workspace Events"])
 
@@ -5350,6 +7153,8 @@ def render_settings_page(ai_ready: bool) -> None:
                 "Model Switcher",
                 "Override the model coming from secrets for this Streamlit session.",
                 "Settings",
+                anchor="MD",
+                tier="primary",
             )
             st.selectbox(
                 "Model source",
@@ -5388,6 +7193,8 @@ def render_settings_page(ai_ready: bool) -> None:
                 "Session Controls",
                 "Adjust session-level export defaults and history retention.",
                 "Settings",
+                anchor="SC",
+                tier="secondary",
             )
             st.radio("Default export template", options=list(EXPORT_TEMPLATES.keys()), key="export_template", horizontal=False)
             st.number_input("History entry limit", min_value=20, max_value=300, step=10, key="settings_history_limit")
@@ -5463,7 +7270,7 @@ def main() -> None:
 
     if not can_access_page(st.session_state.active_page):
         fallback_page = "dashboard"
-        for candidate in ["dashboard", "workspaces", "academics", "developer", "history", "settings"]:
+        for candidate in ["hugyoku", "dashboard", "workspaces", "academics", "developer", "history", "settings"]:
             if can_access_page(candidate):
                 fallback_page = candidate
                 break
@@ -5482,7 +7289,9 @@ def main() -> None:
     render_flash_message()
 
     page = st.session_state.active_page
-    if page == "dashboard":
+    if page == "hugyoku":
+        render_hugyoku_page(ai_ready)
+    elif page == "dashboard":
         render_dashboard()
     elif page == "workspaces":
         render_workspaces_page(ai_ready)
