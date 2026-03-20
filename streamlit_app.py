@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import io
+import json
 import os
 import re
-import zipfile
+import threading
 from datetime import datetime
 from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from tkinter.scrolledtext import ScrolledText
 
-import streamlit as st
 from dotenv import load_dotenv
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -25,7 +27,9 @@ except ImportError:
 
 
 APP_DIR = Path(__file__).resolve().parent
+EXPORT_DIR = APP_DIR / "exports"
 ENV_PATH = APP_DIR / ".env"
+PROFILE_PATH = APP_DIR / "profile.json"
 
 SYSTEM_PROMPT = (
     "You are Hugyoku, an educational assistant for study use. Help the user analyze "
@@ -36,13 +40,29 @@ SYSTEM_PROMPT = (
     "with live cheating or deceptive conduct."
 )
 
-TOOL_FOLDERS = {
-    "quiz": "quiz_solver",
-    "assignment": "assignment_solver",
-    "essay": "essay_generator",
-    "activity": "activity_generator",
-    "document": "document_generator",
-    "codefix": "code_error_fixer",
+PALETTE = {
+    "bg": "#0C1017",
+    "sidebar": "#121924",
+    "panel": "#1B2331",
+    "panel_alt": "#253043",
+    "input": "#121A26",
+    "border": "#3A465B",
+    "text": "#F6F0E5",
+    "muted": "#A9B2C3",
+    "accent": "#C7A86A",
+    "accent_soft": "#F3D79A",
+    "accent_dark": "#7B6234",
+    "success": "#50B58E",
+    "warning": "#E4B65E",
+    "danger": "#E37B74",
+    "info": "#7CB8FF",
+    "glass": "#1A2433",
+    "glass_inner": "#202C3E",
+    "glass_border": "#50607A",
+    "glass_shadow": "#080B11",
+    "glass_shadow_lift": "#121823",
+    "glass_hover": "#2A3850",
+    "glass_chip": "#293548",
 }
 
 KNOWN_EXPORT_LABELS = {
@@ -74,237 +94,6 @@ KNOWN_EXPORT_LABELS = {
     "why it works",
     "next checks",
 }
-
-STATE_DEFAULTS = {
-    "active_page": "dashboard",
-    "saved_name": "",
-    "saved_include_date": False,
-    "main_folder_name": "hugyoku_exports",
-    "output_include_name": True,
-    "output_include_date": False,
-    "essay_include_heading": True,
-    "essay_include_tip": True,
-    "profile_name_input": "",
-    "profile_include_date_input": False,
-    "profile_main_folder_input": "hugyoku_exports",
-    "profile_output_include_name_input": True,
-    "profile_output_include_date_input": False,
-    "profile_essay_include_heading_input": True,
-    "profile_essay_include_tip_input": True,
-    "quiz_upload_name": "No file loaded yet",
-    "quiz_source_text": "",
-    "quiz_summary": "",
-    "quiz_prompt": "",
-    "quiz_response": "",
-    "quiz_mode": "complete",
-    "assignment_upload_name": "No assignment file loaded yet",
-    "assignment_source_text": "",
-    "assignment_summary": "",
-    "assignment_prompt": "",
-    "assignment_response": "",
-    "assignment_mode": "guided",
-    "essay_title": "",
-    "essay_prompt": "",
-    "essay_word_count": 500,
-    "essay_tagalog": False,
-    "essay_english": True,
-    "essay_specific_name": "",
-    "essay_response": "",
-    "activity_title": "",
-    "activity_type": "Worksheet",
-    "activity_level": "",
-    "activity_prompt": "",
-    "activity_response": "",
-    "document_title": "",
-    "document_type": "Study Handout",
-    "document_audience": "",
-    "document_prompt": "",
-    "document_response": "",
-    "codefix_title": "",
-    "codefix_language": "Python",
-    "codefix_error": "",
-    "codefix_source": "",
-    "codefix_expectation": "",
-    "codefix_response": "",
-}
-
-PAGE_DETAILS = {
-    "dashboard": {
-        "title": "Dashboard",
-        "subtitle": "Save your identity, choose one main export folder name, and keep all Hugyoku outputs organized in web-friendly download packages.",
-    },
-    "academics": {
-        "title": "Academics",
-        "subtitle": "Choose a focused school workspace. Each tool keeps the same Hugyoku content flow but is adapted for browser-based use.",
-    },
-    "developer": {
-        "title": "Developer",
-        "subtitle": "A separate hub for code support so the academic tools stay clean and easier to scan.",
-    },
-    "quiz": {
-        "title": "Quiz Solver",
-        "subtitle": "Read quiz files, summarize the task, and generate guided response support in a dedicated web workspace.",
-    },
-    "assignment": {
-        "title": "Assignment Solver",
-        "subtitle": "Analyze assignment instructions, understand the task first, then generate a guided response or full draft.",
-    },
-    "essay": {
-        "title": "Essay Generator",
-        "subtitle": "Build essay drafts with the same Hugyoku output controls, optional export name, and Word export formatting.",
-    },
-    "activity": {
-        "title": "Activity Generator",
-        "subtitle": "Generate worksheets, reflections, drills, or school activities from a topic and instruction set.",
-    },
-    "document": {
-        "title": "Document Generator",
-        "subtitle": "Create structured school documents like handouts, reports, reviewers, and formal academic materials.",
-    },
-    "codefix": {
-        "title": "Code Error Fixer",
-        "subtitle": "Paste code and the error details, then generate a cleaner fix and explanation in a separate developer workspace.",
-    },
-}
-
-THEME_CSS = """
-<style>
-:root {
-  --bg: #0c1017;
-  --sidebar: #121924;
-  --panel: rgba(27, 35, 49, 0.88);
-  --border: rgba(80, 96, 122, 0.65);
-  --text: #f6f0e5;
-  --muted: #a9b2c3;
-  --accent-soft: #f3d79a;
-}
-
-.stApp {
-  background: radial-gradient(circle at top, #182132 0%, #0c1017 55%);
-  color: var(--text);
-}
-
-[data-testid="stSidebar"] {
-  background: linear-gradient(180deg, #111824 0%, #0d1420 100%);
-  border-right: 1px solid rgba(80, 96, 122, 0.38);
-}
-
-.block-container {
-  padding-top: 1.3rem;
-  padding-bottom: 2rem;
-}
-
-.h-shell,
-.h-card,
-.h-stat {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  backdrop-filter: blur(12px);
-}
-
-.h-shell {
-  padding: 1.35rem 1.5rem;
-  margin-bottom: 1rem;
-}
-
-.h-card {
-  padding: 1.1rem 1.15rem;
-  margin-bottom: 1rem;
-}
-
-.h-stat {
-  padding: 0.95rem 1rem;
-  min-height: 100%;
-}
-
-.h-hero-title {
-  font-size: clamp(2rem, 3vw, 3rem);
-  line-height: 1.1;
-  color: var(--text);
-  font-weight: 800;
-  margin-bottom: 0.35rem;
-}
-
-.h-title {
-  font-size: 1.65rem;
-  font-weight: 800;
-  color: var(--text);
-  margin-bottom: 0.35rem;
-}
-
-.h-subtitle,
-.h-copy,
-.h-muted,
-.h-folder {
-  color: var(--muted);
-}
-
-.h-kicker {
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--accent-soft);
-  margin-bottom: 0.5rem;
-}
-
-.h-chip {
-  display: inline-block;
-  padding: 0.38rem 0.7rem;
-  border-radius: 999px;
-  font-size: 0.82rem;
-  font-weight: 700;
-  margin-bottom: 0.5rem;
-}
-
-.h-chip.ready {
-  background: rgba(80, 181, 142, 0.2);
-  color: #c9ffe7;
-}
-
-.h-chip.offline {
-  background: rgba(227, 123, 116, 0.16);
-  color: #ffd4cf;
-}
-
-.h-chip.waiting {
-  background: rgba(228, 182, 94, 0.16);
-  color: #ffe7bb;
-}
-
-.h-tag-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.9rem;
-}
-
-.h-tag {
-  background: rgba(243, 215, 154, 0.1);
-  border: 1px solid rgba(243, 215, 154, 0.2);
-  color: var(--accent-soft);
-  border-radius: 999px;
-  padding: 0.3rem 0.65rem;
-  font-size: 0.8rem;
-}
-
-.h-divider {
-  height: 1px;
-  background: rgba(124, 184, 255, 0.32);
-  margin: 1rem 0 1.2rem;
-}
-
-.h-folder {
-  font-family: Consolas, monospace;
-  font-size: 0.85rem;
-  white-space: pre-wrap;
-}
-
-code {
-  color: #ffe9bd;
-}
-</style>
-"""
 
 
 def sanitize_filename(name: str) -> str:
@@ -386,13 +175,14 @@ def add_body_paragraph(document: Document, text: str, indent_first_line: bool = 
     run.italic = italic
 
 
-def render_docx_bytes(
+def save_docx(
     title: str,
     body: str,
+    output_path: Path,
     category: str = "generic",
     metadata_lines: list[str] | None = None,
     output_options: dict[str, bool] | None = None,
-) -> bytes:
+) -> None:
     document = Document()
     section = document.sections[0]
     section.top_margin = Inches(1)
@@ -488,9 +278,7 @@ def render_docx_bytes(
         tip_run.font.color.rgb = RGBColor(60, 76, 104)
         add_body_paragraph(document, essay_tip, italic=True)
 
-    buffer = io.BytesIO()
-    document.save(buffer)
-    return buffer.getvalue()
+    document.save(output_path)
 
 
 def extract_completion_text(message: object) -> str | None:
@@ -511,40 +299,27 @@ def extract_completion_text(message: object) -> str | None:
     return None
 
 
-def read_secret(name: str) -> str:
-    load_dotenv(ENV_PATH)
-    try:
-        secret_value = st.secrets.get(name)
-    except Exception:
-        secret_value = None
-    if isinstance(secret_value, str) and secret_value.strip():
-        return secret_value.strip()
-    return os.getenv(name, "").strip()
-
-
 def load_client() -> tuple[object | None, str | None, str | None]:
-    token = read_secret("HF_TOKEN")
-    model = read_secret("HF_MODEL")
+    load_dotenv(ENV_PATH)
+    token = os.getenv("HF_TOKEN", "").strip()
+    model = os.getenv("HF_MODEL", "").strip()
 
     if InferenceClient is None:
         return None, None, "Install the packages in requirements.txt to enable AI features."
     if not token or not model:
-        return None, None, "Add HF_TOKEN and HF_MODEL to Streamlit secrets or local .env to enable AI features."
+        return None, None, "Add HF_TOKEN and HF_MODEL to .env to enable AI features."
 
     return InferenceClient(api_key=token), model, None
 
 
-def generate_text(prompt: str, label: str, client: object | None = None, model: str | None = None) -> str:
-    local_client = client
-    local_model = model
-    if local_client is None or local_model is None:
-        local_client, local_model, error = load_client()
-        if error:
-            raise RuntimeError(error)
+def generate_text(prompt: str, label: str) -> str:
+    client, model, error = load_client()
+    if error:
+        raise RuntimeError(error)
 
     try:
-        completion = local_client.chat.completions.create(
-            model=local_model,
+        completion = client.chat.completions.create(
+            model=model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -562,17 +337,72 @@ def generate_text(prompt: str, label: str, client: object | None = None, model: 
     return result
 
 
-def read_docx_text(file_obj: io.BytesIO) -> str:
-    document = Document(file_obj)
+def load_profile_settings() -> dict[str, object]:
+    if not PROFILE_PATH.exists():
+        return {
+            "name": "",
+            "include_date": False,
+            "base_folder": "",
+            "output_include_name": True,
+            "output_include_date": False,
+            "essay_include_heading_suggestion": True,
+            "essay_include_self_check_tip": True,
+        }
+    try:
+        data = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {
+            "name": "",
+            "include_date": False,
+            "base_folder": "",
+            "output_include_name": True,
+            "output_include_date": False,
+            "essay_include_heading_suggestion": True,
+            "essay_include_self_check_tip": True,
+        }
+    return {
+        "name": str(data.get("name", "")).strip(),
+        "include_date": bool(data.get("include_date", False)),
+        "base_folder": str(data.get("base_folder", "")).strip(),
+        "output_include_name": bool(data.get("output_include_name", True)),
+        "output_include_date": bool(data.get("output_include_date", bool(data.get("include_date", False)))),
+        "essay_include_heading_suggestion": bool(data.get("essay_include_heading_suggestion", True)),
+        "essay_include_self_check_tip": bool(data.get("essay_include_self_check_tip", True)),
+    }
+
+
+def save_profile_settings(
+    name: str,
+    include_date: bool,
+    base_folder: str,
+    output_include_name: bool,
+    output_include_date: bool,
+    essay_include_heading_suggestion: bool,
+    essay_include_self_check_tip: bool,
+) -> None:
+    payload = {
+        "name": name.strip(),
+        "include_date": include_date,
+        "base_folder": base_folder.strip(),
+        "output_include_name": output_include_name,
+        "output_include_date": output_include_date,
+        "essay_include_heading_suggestion": essay_include_heading_suggestion,
+        "essay_include_self_check_tip": essay_include_self_check_tip,
+    }
+    PROFILE_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def read_docx_text(path: Path) -> str:
+    document = Document(path)
     paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
     return "\n".join(paragraphs).strip()
 
 
-def read_pdf_text(file_obj: io.BytesIO) -> str:
+def read_pdf_text(path: Path) -> str:
     if PdfReader is None:
         raise RuntimeError("PDF reading needs the pypdf package. Install requirements.txt first.")
 
-    reader = PdfReader(file_obj)
+    reader = PdfReader(str(path))
     parts: list[str] = []
     for page in reader.pages:
         text = page.extract_text() or ""
@@ -585,1007 +415,2938 @@ def read_pdf_text(file_obj: io.BytesIO) -> str:
     return joined
 
 
-def read_text_file(file_bytes: bytes) -> str:
-    return file_bytes.decode("utf-8", errors="ignore").strip()
+def read_text_file(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="ignore").strip()
 
 
-def read_uploaded_document(uploaded_file: object) -> str:
-    name = getattr(uploaded_file, "name", "uploaded.txt")
-    suffix = Path(name).suffix.lower()
-    data = uploaded_file.getvalue()
+def read_document_text(path: Path) -> str:
+    suffix = path.suffix.lower()
     if suffix == ".docx":
-        return read_docx_text(io.BytesIO(data))
+        return read_docx_text(path)
     if suffix == ".pdf":
-        return read_pdf_text(io.BytesIO(data))
+        return read_pdf_text(path)
     if suffix in {".txt", ".md"}:
-        return read_text_file(data)
+        return read_text_file(path)
     raise RuntimeError("Unsupported file type. Use .docx, .pdf, .txt, or .md.")
 
-def ensure_state() -> None:
-    for key, value in STATE_DEFAULTS.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
 
+class PremiumStudyAssistant(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("Hugyoku | Premium Academics Suite")
+        self.geometry("1360x860")
+        self.minsize(980, 640)
+        self.configure(bg=PALETTE["bg"])
 
-def go(page: str) -> None:
-    st.session_state.active_page = page
-    st.rerun()
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
+        profile = load_profile_settings()
+        self.saved_name = str(profile.get("name", "")).strip()
+        self.saved_include_date = bool(profile.get("include_date", False))
+        saved_folder = str(profile.get("base_folder", "")).strip()
+        self.base_export_dir = Path(saved_folder).expanduser() if saved_folder else EXPORT_DIR
+        self.quiz_loaded_path: Path | None = None
+        self.busy = False
+        self.ai_ready = False
+        self.pages: dict[str, tk.Frame] = {}
+        self.nav_buttons: dict[str, tk.Button] = {}
+        self.academic_buttons: dict[str, tk.Button] = {}
+        self.academic_tools: dict[str, tk.Frame] = {}
+        self.ai_action_buttons: list[tk.Button] = []
+        self._responsive_after_id: str | None = None
+        self.dashboard_layout: dict[str, object] = {}
+        self.quiz_layout: dict[str, object] = {}
+        self.essay_layout: dict[str, object] = {}
 
-def save_profile() -> None:
-    st.session_state.saved_name = st.session_state.profile_name_input.strip()
-    st.session_state.saved_include_date = bool(st.session_state.profile_include_date_input)
-    st.session_state.main_folder_name = sanitize_filename(st.session_state.profile_main_folder_input.strip() or "hugyoku_exports")
-    st.session_state.output_include_name = bool(st.session_state.profile_output_include_name_input)
-    st.session_state.output_include_date = bool(st.session_state.profile_output_include_date_input)
-    st.session_state.essay_include_heading = bool(st.session_state.profile_essay_include_heading_input)
-    st.session_state.essay_include_tip = bool(st.session_state.profile_essay_include_tip_input)
+        self.status_var = tk.StringVar(value="Workspace ready.")
+        self.ai_chip_var = tk.StringVar(value="Checking AI status...")
+        self.model_var = tk.StringVar(value="No model configured")
+        self.export_var = tk.StringVar(value=str(EXPORT_DIR))
+        self.header_title_var = tk.StringVar()
+        self.header_subtitle_var = tk.StringVar()
+        self.profile_summary_var = tk.StringVar()
+        self.profile_date_var = tk.StringVar()
+        self.profile_note_var = tk.StringVar()
+        self.main_folder_var = tk.StringVar()
+        self.quiz_folder_var = tk.StringVar()
+        self.essay_folder_var = tk.StringVar()
+        self.activity_folder_var = tk.StringVar()
+        self.document_folder_var = tk.StringVar()
+        self.assignment_folder_var = tk.StringVar()
+        self.codefix_folder_var = tk.StringVar()
+        self.academics_folders_var = tk.StringVar()
+        self.developer_folder_var = tk.StringVar()
+        self.folder_note_var = tk.StringVar()
 
+        self.name_input_var = tk.StringVar(value=self.saved_name)
+        self.include_date_var = tk.BooleanVar(value=self.saved_include_date)
+        self.output_include_name_var = tk.BooleanVar(value=bool(profile.get("output_include_name", True)))
+        self.output_include_date_var = tk.BooleanVar(value=bool(profile.get("output_include_date", self.saved_include_date)))
+        self.essay_include_heading_var = tk.BooleanVar(
+            value=bool(profile.get("essay_include_heading_suggestion", True))
+        )
+        self.essay_include_tip_var = tk.BooleanVar(value=bool(profile.get("essay_include_self_check_tip", True)))
+        self.academic_tool_var = tk.StringVar(value="quiz")
 
-def clear_profile() -> None:
-    st.session_state.saved_name = ""
-    st.session_state.saved_include_date = False
-    st.session_state.main_folder_name = "hugyoku_exports"
-    st.session_state.output_include_name = False
-    st.session_state.output_include_date = False
-    st.session_state.essay_include_heading = True
-    st.session_state.essay_include_tip = True
-    st.session_state.profile_name_input = ""
-    st.session_state.profile_include_date_input = False
-    st.session_state.profile_main_folder_input = "hugyoku_exports"
-    st.session_state.profile_output_include_name_input = False
-    st.session_state.profile_output_include_date_input = False
-    st.session_state.profile_essay_include_heading_input = True
-    st.session_state.profile_essay_include_tip_input = True
+        self.quiz_file_var = tk.StringVar(value="No file loaded yet")
+        self.quiz_stats_var = tk.StringVar(value="0 words   |   0 characters")
+        self.quiz_progress_var = tk.StringVar(value="Upload a file or paste text, then analyze it.")
+        self.quiz_mode_var = tk.StringVar(value="complete")
+        self.quiz_summary_cache = ""
+        self.quiz_response_cache = ""
+        self.quiz_export_title = "Quiz Support"
+        self.quiz_export_name = "quiz_support"
 
+        self.essay_title_var = tk.StringVar()
+        self.essay_specific_name_var = tk.StringVar()
+        self.essay_word_count_var = tk.StringVar(value="500")
+        self.essay_tagalog_var = tk.BooleanVar(value=False)
+        self.essay_english_var = tk.BooleanVar(value=True)
+        self.essay_progress_var = tk.StringVar(value="Set the essay details, then generate.")
+        self.essay_export_title = "Essay Draft"
+        self.essay_export_name = "essay_draft"
+        self.essay_response_cache = ""
 
-def identity_block() -> str:
-    lines: list[str] = []
-    if st.session_state.saved_name:
-        lines.append(f"Name: {st.session_state.saved_name}")
-    if st.session_state.saved_include_date:
-        lines.append(f"Date: {today_string()}")
-    return "\n".join(lines)
+        self.activity_title_var = tk.StringVar()
+        self.activity_type_var = tk.StringVar(value="Worksheet")
+        self.activity_level_var = tk.StringVar()
+        self.activity_progress_var = tk.StringVar(value="Set the activity details, then generate.")
+        self.activity_response_cache = ""
+        self.activity_export_title = "Activity Draft"
+        self.activity_export_name = "activity_draft"
 
+        self.document_title_var = tk.StringVar()
+        self.document_type_var = tk.StringVar(value="Study Handout")
+        self.document_audience_var = tk.StringVar()
+        self.document_progress_var = tk.StringVar(value="Set the document request, then generate.")
+        self.document_response_cache = ""
+        self.document_export_title = "Document Draft"
+        self.document_export_name = "document_draft"
 
-def current_output_settings() -> dict[str, bool]:
-    return {
-        "include_name": bool(st.session_state.output_include_name),
-        "include_date": bool(st.session_state.output_include_date),
-        "essay_include_heading": bool(st.session_state.essay_include_heading),
-        "essay_include_tip": bool(st.session_state.essay_include_tip),
-    }
+        self.assignment_loaded_path: Path | None = None
+        self.assignment_file_var = tk.StringVar(value="No assignment file loaded yet")
+        self.assignment_stats_var = tk.StringVar(value="0 words   |   0 characters")
+        self.assignment_progress_var = tk.StringVar(value="Upload or paste the assignment, then analyze it.")
+        self.assignment_mode_var = tk.StringVar(value="guided")
+        self.assignment_summary_cache = ""
+        self.assignment_response_cache = ""
+        self.assignment_export_title = "Assignment Support"
+        self.assignment_export_name = "assignment_support"
 
+        self.codefix_title_var = tk.StringVar()
+        self.codefix_language_var = tk.StringVar(value="Python")
+        self.codefix_progress_var = tk.StringVar(value="Paste the code and error details, then generate a fix.")
+        self.codefix_response_cache = ""
+        self.codefix_export_title = "Code Fix"
+        self.codefix_export_name = "code_fix"
 
-def export_metadata_lines(category: str = "generic", name_override: str | None = None) -> list[str]:
-    lines: list[str] = []
-    selected_name = st.session_state.saved_name
-    if category == "essay" and name_override and name_override.strip():
-        selected_name = name_override.strip()
-    if st.session_state.output_include_name and selected_name:
-        lines.append(selected_name)
-    if st.session_state.output_include_date:
-        lines.append(today_string())
-    return lines
+        self.heading_font = ("Palatino Linotype", 28, "bold")
+        self.page_title_font = ("Palatino Linotype", 21, "bold")
+        self.card_title_font = ("Palatino Linotype", 15, "bold")
+        self.body_font = ("Segoe UI", 11)
+        self.label_font = ("Segoe UI Semibold", 10)
+        self.small_font = ("Segoe UI", 9)
+        self.button_font = ("Segoe UI Semibold", 10)
+        self.metric_font = ("Segoe UI Semibold", 13)
 
+        self.page_icon_map = {
+            "Dashboard": "◈",
+            "Academics": "◎",
+            "Developer": "⌘",
+            "Quiz Solver": "◆",
+            "Essay Generator": "✦",
+            "Activity Generator": "▣",
+            "Document Generator": "▤",
+            "Assignment Solver": "◌",
+            "Code Error Fixer": "⌁",
+        }
+        self.card_icon_map = {
+            "Profile Section": "◈",
+            "Saved Identity Preview": "◇",
+            "Export Folder Routing": "▣",
+            "Quick Launch": "➜",
+            "How This Flow Works": "◎",
+            "Academic Navigation": "◎",
+            "Developer Navigation": "⌘",
+            "Quiz Solver Workspace": "◆",
+            "Essay Generator Workspace": "✦",
+            "Activity Generator Workspace": "▣",
+            "Document Generator Workspace": "▤",
+            "Assignment Solver Workspace": "◌",
+            "Code Error Fixer Workspace": "⌁",
+            "Quiz Intake": "◆",
+            "Summary And Task Reading": "◌",
+            "Response Builder": "➤",
+            "Essay Builder": "✦",
+            "Essay Export Format": "◇",
+            "Essay Preview": "✎",
+            "Activity Builder": "▣",
+            "Activity Preview": "✎",
+            "Document Builder": "▤",
+            "Document Preview": "✎",
+            "Assignment Intake": "◌",
+            "Assignment Summary": "◇",
+            "Assignment Response": "➤",
+            "Code Fix Builder": "⌁",
+            "Code Fix Preview": "✎",
+        }
+        self.button_icon_map = {
+            "01  Dashboard": "◈",
+            "02  Academics": "◎",
+            "03  Developer": "⌘",
+            "Refresh AI Status": "↻",
+            "Save Profile": "✦",
+            "Clear Saved Profile": "⊖",
+            "Choose Main Folder": "▣",
+            "Open Main Folder": "↗",
+            "Open Academics Hub": "◎",
+            "Open Developer Hub": "⌘",
+            "Open Quiz Solver": "◆",
+            "Open Essay Generator": "✦",
+            "Open Activity Generator": "▣",
+            "Open Document Generator": "▤",
+            "Open Assignment Solver": "◌",
+            "Open Code Error Fixer": "⌁",
+            "Back To Academics": "↩",
+            "Back To Developer": "↩",
+            "Upload File": "↑",
+            "Upload Assignment File": "↑",
+            "Clear Quiz Input": "⊖",
+            "Clear Assignment Input": "⊖",
+            "Analyze Quiz": "◌",
+            "Analyze Assignment": "◌",
+            "Generate Quiz Guidance": "➤",
+            "Generate Assignment Guidance": "➤",
+            "Export Result": "↓",
+            "Clear Result": "⊖",
+            "Generate Essay": "✦",
+            "Clear Essay Form": "⊖",
+            "Generate Activity": "▣",
+            "Clear Activity Form": "⊖",
+            "Generate Document": "▤",
+            "Clear Document Form": "⊖",
+            "Generate Code Fix": "⌁",
+            "Clear Code Fixer": "⊖",
+        }
 
-def folder_path_lines() -> dict[str, str]:
-    main_folder = sanitize_filename(st.session_state.main_folder_name or "hugyoku_exports")
-    paths = {"main": main_folder}
-    for category, folder in TOOL_FOLDERS.items():
-        paths[category] = f"{main_folder}/{folder}"
-    return paths
+        self.option_add("*Font", self.body_font)
+        self._ensure_export_directories()
+        self._refresh_identity_labels()
+        self._build_shell()
+        self.refresh_ai_status()
+        self.show_page("dashboard")
+        self.bind("<Configure>", self._schedule_responsive_refresh, add="+")
+        self.after(120, self._apply_responsive_layout)
 
+    def _build_shell(self) -> None:
+        shell = tk.Frame(self, bg=PALETTE["bg"])
+        shell.pack(fill="both", expand=True, padx=18, pady=18)
 
-def build_export_package(
-    title: str,
-    body: str,
-    default_name: str,
-    category: str,
-    name_override: str | None = None,
-) -> tuple[bytes, str, str]:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    stem = sanitize_filename(default_name)
-    docx_filename = f"{stem}_{stamp}.docx"
-    main_folder = sanitize_filename(st.session_state.main_folder_name or "hugyoku_exports")
-    internal_folder = TOOL_FOLDERS.get(category, category)
-    internal_path = f"{main_folder}/{internal_folder}/{docx_filename}"
-    docx_bytes = render_docx_bytes(
-        title,
-        body.strip(),
-        category=category,
-        metadata_lines=export_metadata_lines(category=category, name_override=name_override),
-        output_options=current_output_settings(),
-    )
+        sidebar = tk.Frame(
+            shell,
+            bg=PALETTE["sidebar"],
+            width=250,
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+        )
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(internal_path, docx_bytes)
-    zip_name = f"{stem}_{stamp}.zip"
-    return zip_buffer.getvalue(), zip_name, internal_path
+        content = tk.Frame(shell, bg=PALETTE["bg"])
+        content.pack(side="left", fill="both", expand=True, padx=(18, 0))
 
+        self._build_sidebar(sidebar)
+        self._build_header(content)
 
-def clear_quiz_workspace() -> None:
-    st.session_state.quiz_upload_name = "No file loaded yet"
-    st.session_state.quiz_source_text = ""
-    st.session_state.quiz_summary = ""
-    st.session_state.quiz_prompt = ""
-    st.session_state.quiz_response = ""
-    st.session_state.quiz_mode = "complete"
+        self.page_container = tk.Frame(content, bg=PALETTE["bg"])
+        self.page_container.pack(fill="both", expand=True)
 
+        footer = tk.Frame(
+            content,
+            bg=PALETTE["panel"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+        )
+        footer.pack(fill="x", pady=(16, 0))
+        tk.Label(
+            footer,
+            textvariable=self.status_var,
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+            padx=18,
+            pady=14,
+            anchor="w",
+        ).pack(fill="x")
 
-def clear_assignment_workspace() -> None:
-    st.session_state.assignment_upload_name = "No assignment file loaded yet"
-    st.session_state.assignment_source_text = ""
-    st.session_state.assignment_summary = ""
-    st.session_state.assignment_prompt = ""
-    st.session_state.assignment_response = ""
-    st.session_state.assignment_mode = "guided"
+        self._build_dashboard_page()
+        self._build_academics_page()
+        self._build_developer_page()
+        self._build_quiz_page()
+        self._build_essay_page()
+        self._build_activity_page()
+        self._build_document_page()
+        self._build_assignment_page()
+        self._build_codefix_page()
 
+    def _build_sidebar(self, parent: tk.Frame) -> None:
+        logo_wrap = tk.Frame(parent, bg=PALETTE["sidebar"])
+        logo_wrap.pack(fill="x", padx=22, pady=(22, 14))
 
-def clear_essay_form() -> None:
-    st.session_state.essay_title = ""
-    st.session_state.essay_prompt = ""
-    st.session_state.essay_word_count = 500
-    st.session_state.essay_tagalog = False
-    st.session_state.essay_english = True
-    st.session_state.essay_specific_name = ""
+        emblem = tk.Frame(logo_wrap, bg=PALETTE["accent"], width=56, height=56)
+        emblem.pack(anchor="w")
+        emblem.pack_propagate(False)
+        tk.Label(
+            emblem,
+            text="H",
+            bg=PALETTE["accent"],
+            fg=PALETTE["bg"],
+            font=("Palatino Linotype", 22, "bold"),
+        ).pack(expand=True)
 
+        tk.Label(
+            logo_wrap,
+            text="Hugyoku",
+            bg=PALETTE["sidebar"],
+            fg=PALETTE["text"],
+            font=("Palatino Linotype", 24, "bold"),
+            pady=10,
+        ).pack(anchor="w")
+        tk.Label(
+            logo_wrap,
+            text="Premium study and utility desk for academic generators, solvers, and code-fixing support.",
+            bg=PALETTE["sidebar"],
+            fg=PALETTE["muted"],
+            font=self.body_font,
+            justify="left",
+            wraplength=230,
+        ).pack(anchor="w")
 
-def clear_essay_result() -> None:
-    st.session_state.essay_response = ""
+        nav = tk.Frame(parent, bg=PALETTE["sidebar"])
+        nav.pack(fill="x", padx=18, pady=(18, 12))
 
+        items = [
+            ("dashboard", "01  Dashboard"),
+            ("academics", "02  Academics"),
+            ("developer", "03  Developer"),
+        ]
+        for key, label in items:
+            button = self._make_button(nav, label, lambda page=key: self.show_page(page), variant="nav", anchor="w")
+            button.pack(fill="x", pady=6)
+            self.nav_buttons[key] = button
 
-def clear_activity_form() -> None:
-    st.session_state.activity_title = ""
-    st.session_state.activity_type = "Worksheet"
-    st.session_state.activity_level = ""
-    st.session_state.activity_prompt = ""
+        card = tk.Frame(
+            parent,
+            bg=PALETTE["panel"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+        )
+        card.pack(fill="x", padx=18, pady=(18, 10))
+        tk.Frame(card, bg=PALETTE["accent"], height=3).pack(fill="x")
+        inner = tk.Frame(card, bg=PALETTE["panel"])
+        inner.pack(fill="both", expand=True, padx=16, pady=16)
+        tk.Label(
+            inner,
+            text="Educational use only",
+            bg=PALETTE["panel"],
+            fg=PALETTE["text"],
+            font=self.card_title_font,
+        ).pack(anchor="w")
+        tk.Label(
+            inner,
+            text="Use these flows for studying, drafting, and understanding tasks from your files. Review outputs before submitting anything.",
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            wraplength=228,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 0))
 
+        tk.Label(
+            parent,
+            text="Deluxe premium academic workflow",
+            bg=PALETTE["sidebar"],
+            fg=PALETTE["accent_soft"],
+            font=self.small_font,
+            pady=18,
+        ).pack(side="bottom")
 
-def clear_activity_result() -> None:
-    st.session_state.activity_response = ""
+    def _build_header(self, parent: tk.Frame) -> None:
+        header = tk.Frame(
+            parent,
+            bg=PALETTE["panel"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+        )
+        header.pack(fill="x", pady=(0, 16))
 
+        left = tk.Frame(header, bg=PALETTE["panel"])
+        left.pack(side="left", fill="x", expand=True, padx=22, pady=18)
+        tk.Label(
+            left,
+            textvariable=self.header_title_var,
+            bg=PALETTE["panel"],
+            fg=PALETTE["text"],
+            font=self.heading_font,
+            anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            left,
+            textvariable=self.header_subtitle_var,
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            font=self.body_font,
+            anchor="w",
+            wraplength=760,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 0))
 
-def clear_document_form() -> None:
-    st.session_state.document_title = ""
-    st.session_state.document_type = "Study Handout"
-    st.session_state.document_audience = ""
-    st.session_state.document_prompt = ""
+        right = tk.Frame(header, bg=PALETTE["panel"])
+        right.pack(side="right", padx=22, pady=18)
 
+        self.ai_chip = tk.Label(
+            right,
+            textvariable=self.ai_chip_var,
+            bg=PALETTE["panel_alt"],
+            fg=PALETTE["accent_soft"],
+            font=self.label_font,
+            padx=14,
+            pady=8,
+        )
+        self.ai_chip.pack(anchor="e")
 
-def clear_document_result() -> None:
-    st.session_state.document_response = ""
+        tk.Label(
+            right,
+            textvariable=self.profile_summary_var,
+            bg=PALETTE["panel"],
+            fg=PALETTE["accent_soft"],
+            font=self.small_font,
+            anchor="e",
+            justify="right",
+        ).pack(anchor="e", pady=(8, 0))
+        tk.Label(
+            right,
+            textvariable=self.profile_date_var,
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+            anchor="e",
+            justify="right",
+        ).pack(anchor="e", pady=(4, 0))
+        tk.Label(
+            right,
+            textvariable=self.model_var,
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+            anchor="e",
+            justify="right",
+            wraplength=340,
+        ).pack(anchor="e", pady=(4, 0))
+        self._make_button(right, "Refresh AI Status", self.refresh_ai_status, variant="secondary").pack(
+            anchor="e", pady=(12, 0)
+        )
 
+    def _build_page_header(self, parent: tk.Frame, title: str, subtitle: str) -> None:
+        tk.Label(
+            parent,
+            text=self._page_title_text(title),
+            bg=PALETTE["bg"],
+            fg=PALETTE["text"],
+            font=self.page_title_font,
+            anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            parent,
+            text=subtitle,
+            bg=PALETTE["bg"],
+            fg=PALETTE["muted"],
+            font=self.body_font,
+            wraplength=980,
+            justify="left",
+            anchor="w",
+        ).pack(anchor="w", pady=(6, 18))
 
-def clear_codefix_form() -> None:
-    st.session_state.codefix_title = ""
-    st.session_state.codefix_language = "Python"
-    st.session_state.codefix_error = ""
-    st.session_state.codefix_source = ""
-    st.session_state.codefix_expectation = ""
+    def _create_page(self, key: str) -> tk.Frame:
+        page = tk.Frame(self.page_container, bg=PALETTE["bg"])
+        page.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.pages[key] = page
+        return page
 
+    def _bind_mousewheel(self, canvas: tk.Canvas) -> None:
+        def on_mousewheel(event: tk.Event) -> None:
+            delta = getattr(event, "delta", 0)
+            if delta:
+                canvas.yview_scroll(int(-delta / 120), "units")
 
-def clear_codefix_result() -> None:
-    st.session_state.codefix_response = ""
+        def bind_canvas(_event: tk.Event | None = None) -> None:
+            canvas.bind_all("<MouseWheel>", on_mousewheel)
 
+        def unbind_canvas(_event: tk.Event | None = None) -> None:
+            canvas.unbind_all("<MouseWheel>")
 
-def run_generation(prompt: str, label: str) -> str | None:
-    client, model, error = load_client()
-    if error:
-        st.error(error)
-        return None
-    with st.spinner(f"Generating {label}..."):
+        canvas.bind("<Enter>", bind_canvas, add="+")
+        canvas.bind("<Leave>", unbind_canvas, add="+")
+
+    def _create_scrollable_section(self, parent: tk.Widget, bg: str | None = None) -> tuple[tk.Frame, tk.Frame, tk.Canvas]:
+        section_bg = bg or PALETTE["bg"]
+        shell = tk.Frame(parent, bg=section_bg)
+        canvas = tk.Canvas(
+            shell,
+            bg=section_bg,
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+            yscrollincrement=24,
+        )
+        scrollbar = tk.Scrollbar(
+            shell,
+            orient="vertical",
+            command=canvas.yview,
+            troughcolor=section_bg,
+            activebackground=PALETTE["accent"],
+            bg=PALETTE["panel_alt"],
+            width=12,
+        )
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        body = tk.Frame(canvas, bg=section_bg)
+        window_id = canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def on_body_configure(_event: tk.Event | None = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def on_canvas_configure(event: tk.Event) -> None:
+            canvas.itemconfigure(window_id, width=event.width)
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        body.bind("<Configure>", on_body_configure, add="+")
+        canvas.bind("<Configure>", on_canvas_configure, add="+")
+        self._bind_mousewheel(canvas)
+        return shell, body, canvas
+
+    def _page_title_text(self, title: str) -> str:
+        icon = self.page_icon_map.get(title)
+        return f"{icon}  {title}" if icon else title
+
+    def _card_title_text(self, title: str) -> tuple[str, str | None]:
+        return title, self.card_icon_map.get(title)
+
+    def _button_text(self, text: str) -> str:
+        icon = self.button_icon_map.get(text)
+        return f"{icon}  {text}" if icon else text
+
+    def _pointer_inside(self, widget: tk.Widget) -> bool:
         try:
-            return generate_text(prompt, label, client=client, model=model)
-        except Exception as exc:
-            st.error(str(exc))
-            return None
+            x = self.winfo_pointerx()
+            y = self.winfo_pointery()
+            left = widget.winfo_rootx()
+            top = widget.winfo_rooty()
+            right = left + widget.winfo_width()
+            bottom = top + widget.winfo_height()
+        except tk.TclError:
+            return False
+        return left <= x <= right and top <= y <= bottom
 
+    def _bind_hover_group(self, root: tk.Widget, widgets: list[tk.Widget], on_enter: object, on_leave: object) -> None:
+        def handle_enter(_event: object | None = None) -> None:
+            on_enter()
 
-def essay_language() -> str | None:
-    tagalog = bool(st.session_state.essay_tagalog)
-    english = bool(st.session_state.essay_english)
-    if tagalog and english:
-        return "Taglish"
-    if tagalog:
-        return "Tagalog"
-    if english:
-        return "English"
-    return None
+        def handle_leave(_event: object | None = None) -> None:
+            self.after(25, lambda: on_enter() if self._pointer_inside(root) else on_leave())
 
+        for widget in widgets:
+            widget.bind("<Enter>", handle_enter, add="+")
+            widget.bind("<Leave>", handle_leave, add="+")
 
-def render_card_header(title: str, subtitle: str, kicker: str | None = None) -> None:
-    kicker_html = f'<div class="h-kicker">{kicker}</div>' if kicker else ""
-    st.markdown(
-        f"""
-        <div class="h-card">
-          {kicker_html}
-          <div class="h-title">{title}</div>
-          <div class="h-subtitle">{subtitle}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_stat_card(title: str, body: str) -> None:
-    st.markdown(
-        f"""
-        <div class="h-stat">
-          <div class="h-kicker">{title}</div>
-          <div class="h-folder">{body}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_header(ai_ready: bool, model_label: str, ai_message: str) -> None:
-    title = f"{st.session_state.saved_name or 'Guest'}'s Premium Study Desk"
-    subtitle = (
-        "A cleaner dashboard for identity settings, grouped academic workspaces, "
-        "and a separate developer hub for code-fixing support."
-    )
-    chip_class = "ready" if ai_ready else ("waiting" if "Add HF_TOKEN" in ai_message or "Streamlit secrets" in ai_message else "offline")
-
-    left, right = st.columns([3.2, 1.2])
-    with left:
-        st.markdown(
-            f"""
-            <div class="h-shell">
-              <div class="h-hero-title">{title}</div>
-              <div class="h-subtitle">{subtitle}</div>
-              <div class="h-tag-row">
-                <span class="h-tag">Dashboard Identity</span>
-                <span class="h-tag">Academic Solvers</span>
-                <span class="h-tag">Document Drafting</span>
-                <span class="h-tag">Code Fix Support</span>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    def _apply_button_palette(
+        self,
+        button: tk.Button,
+        bg: str,
+        fg: str,
+        hover_bg: str,
+        hover_fg: str,
+        border: str,
+        hover_border: str,
+    ) -> None:
+        button._base_bg = bg
+        button._base_fg = fg
+        button._hover_bg = hover_bg
+        button._hover_fg = hover_fg
+        button._base_border = border
+        button._hover_border = hover_border
+        button.configure(
+            bg=bg,
+            fg=fg,
+            activebackground=hover_bg,
+            activeforeground=hover_fg,
+            highlightbackground=border,
+            highlightcolor=hover_border,
         )
-    with right:
-        st.markdown(
-            f"""
-            <div class="h-shell">
-              <div class="h-chip {chip_class}">{'AI ready for academics' if ai_ready else ai_message}</div>
-              <div class="h-copy"><strong>{st.session_state.saved_name or 'No saved name yet'}</strong></div>
-              <div class="h-muted">{'Date today enabled: ' + today_string() if st.session_state.saved_include_date else 'Date today disabled'}</div>
-              <div class="h-muted" style="margin-top:0.4rem;">{model_label}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+
+    def _create_card(self, parent: tk.Widget, title: str, subtitle: str, accent: str) -> tuple[tk.Frame, tk.Frame]:
+        display_title, icon = self._card_title_text(title)
+        outer = tk.Frame(parent, bg=PALETTE["glass_shadow"], highlightthickness=0)
+        card = tk.Frame(
+            outer,
+            bg=PALETTE["glass"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["glass_border"],
         )
-        if st.button("Refresh AI Status", key="refresh_ai_status", use_container_width=True):
-            st.rerun()
+        card.pack(fill="both", expand=True, padx=(0, 3), pady=(0, 3))
+        accent_bar = tk.Frame(card, bg=accent, height=3)
+        accent_bar.pack(fill="x")
 
-
-def render_sidebar(ai_ready: bool, model_label: str, ai_message: str) -> None:
-    st.sidebar.markdown("## Hugyoku")
-    st.sidebar.caption("Premium study and utility desk for academic generators, solvers, and code-fixing support.")
-
-    nav_items = [
-        ("dashboard", "01  Dashboard"),
-        ("academics", "02  Academics"),
-        ("developer", "03  Developer"),
-    ]
-    academic_pages = {"academics", "quiz", "assignment", "essay", "activity", "document"}
-    developer_pages = {"developer", "codefix"}
-
-    for page, label in nav_items:
-        active = (
-            page == "dashboard" and st.session_state.active_page == "dashboard"
-        ) or (
-            page == "academics" and st.session_state.active_page in academic_pages
-        ) or (
-            page == "developer" and st.session_state.active_page in developer_pages
+        shell = tk.Frame(card, bg=PALETTE["glass_inner"])
+        shell.pack(fill="both", expand=True, padx=20, pady=18)
+        header_row = tk.Frame(shell, bg=PALETTE["glass_inner"])
+        header_row.pack(fill="x")
+        badge = tk.Label(
+            header_row,
+            text=icon or "◇",
+            bg=PALETTE["glass_chip"],
+            fg=accent,
+            font=("Segoe UI Symbol", 11, "bold"),
+            padx=10,
+            pady=6,
         )
-        if st.sidebar.button(label, key=f"nav_{page}", type="primary" if active else "secondary", use_container_width=True):
-            go(page)
+        badge.pack(side="left")
+        title_label = tk.Label(
+            header_row,
+            text=display_title,
+            bg=PALETTE["glass_inner"],
+            fg=PALETTE["text"],
+            font=self.card_title_font,
+            anchor="w",
+        )
+        title_label.pack(side="left", padx=(12, 0))
+        subtitle_label = tk.Label(
+            shell,
+            text=subtitle,
+            bg=PALETTE["glass_inner"],
+            fg=PALETTE["muted"],
+            justify="left",
+            wraplength=620,
+            anchor="w",
+        )
+        subtitle_label.pack(anchor="w", pady=(10, 14))
+        body = tk.Frame(shell, bg=PALETTE["glass_inner"])
+        body.pack(fill="both", expand=True)
 
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**Educational use only**")
-    st.sidebar.caption("Use these flows for studying, drafting, and understanding tasks from your files. Review outputs before submitting anything.")
-    st.sidebar.markdown("---")
-    st.sidebar.caption("AI Status")
-    st.sidebar.write("Ready" if ai_ready else ai_message)
-    st.sidebar.caption(model_label)
+        def on_enter() -> None:
+            outer.configure(bg=PALETTE["glass_shadow_lift"])
+            card.configure(bg=PALETTE["glass_hover"], highlightbackground=accent)
+            shell.configure(bg=PALETTE["glass_hover"])
+            header_row.configure(bg=PALETTE["glass_hover"])
+            title_label.configure(bg=PALETTE["glass_hover"], fg=PALETTE["accent_soft"])
+            subtitle_label.configure(bg=PALETTE["glass_hover"])
+            body.configure(bg=PALETTE["glass_hover"])
+            badge.configure(bg=accent, fg=PALETTE["bg"])
 
+        def on_leave() -> None:
+            outer.configure(bg=PALETTE["glass_shadow"])
+            card.configure(bg=PALETTE["glass"], highlightbackground=PALETTE["glass_border"])
+            shell.configure(bg=PALETTE["glass_inner"])
+            header_row.configure(bg=PALETTE["glass_inner"])
+            title_label.configure(bg=PALETTE["glass_inner"], fg=PALETTE["text"])
+            subtitle_label.configure(bg=PALETTE["glass_inner"])
+            body.configure(bg=PALETTE["glass_inner"])
+            badge.configure(bg=PALETTE["glass_chip"], fg=accent)
 
-def render_page_intro(page_key: str) -> None:
-    details = PAGE_DETAILS[page_key]
-    st.markdown(f"## {details['title']}")
-    st.markdown(f"<div class='h-copy'>{details['subtitle']}</div>", unsafe_allow_html=True)
-    st.markdown("<div class='h-divider'></div>", unsafe_allow_html=True)
+        self._bind_hover_group(
+            outer,
+            [outer, card, accent_bar, shell, header_row, badge, title_label, subtitle_label, body],
+            on_enter,
+            on_leave,
+        )
+        return outer, body
 
+    def _make_button(
+        self,
+        parent: tk.Widget,
+        text: str,
+        command: object,
+        variant: str = "primary",
+        anchor: str = "center",
+    ) -> tk.Button:
+        styles = {
+            "primary": {
+                "bg": PALETTE["accent"],
+                "fg": PALETTE["bg"],
+                "hover_bg": PALETTE["accent_soft"],
+                "hover_fg": PALETTE["bg"],
+                "border": PALETTE["accent_dark"],
+                "hover_border": PALETTE["accent_soft"],
+            },
+            "secondary": {
+                "bg": PALETTE["panel_alt"],
+                "fg": PALETTE["text"],
+                "hover_bg": PALETTE["glass_hover"],
+                "hover_fg": PALETTE["accent_soft"],
+                "border": PALETTE["glass_border"],
+                "hover_border": PALETTE["accent"],
+            },
+            "ghost": {
+                "bg": PALETTE["bg"],
+                "fg": PALETTE["accent_soft"],
+                "hover_bg": PALETTE["panel_alt"],
+                "hover_fg": PALETTE["text"],
+                "border": PALETTE["border"],
+                "hover_border": PALETTE["accent_soft"],
+            },
+            "nav": {
+                "bg": PALETTE["sidebar"],
+                "fg": PALETTE["text"],
+                "hover_bg": PALETTE["panel_alt"],
+                "hover_fg": PALETTE["accent_soft"],
+                "border": PALETTE["sidebar"],
+                "hover_border": PALETTE["accent_dark"],
+            },
+        }
+        config = styles[variant]
+        button = tk.Button(
+            parent,
+            text=self._button_text(text),
+            command=command,
+            disabledforeground="#727C8F",
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            cursor="hand2",
+            font=self.button_font,
+            padx=18,
+            pady=12,
+            anchor=anchor,
+        )
+        self._apply_button_palette(
+            button,
+            config["bg"],
+            config["fg"],
+            config["hover_bg"],
+            config["hover_fg"],
+            config["border"],
+            config["hover_border"],
+        )
 
-def render_tool_hub_card(title: str, subtitle: str, folder_text: str, button_label: str, target: str, primary: bool = False) -> None:
-    render_card_header(title, subtitle)
-    st.markdown(f"<div class='h-folder'>{folder_text}</div>", unsafe_allow_html=True)
-    if st.button(button_label, key=f"open_{target}", use_container_width=True, type="primary" if primary else "secondary"):
-        go(target)
+        def on_enter(_event: object | None = None) -> None:
+            if str(button.cget("state")) == "disabled":
+                return
+            button.configure(
+                bg=button._hover_bg,
+                fg=button._hover_fg,
+                highlightbackground=button._hover_border,
+            )
 
+        def on_leave(_event: object | None = None) -> None:
+            if str(button.cget("state")) == "disabled":
+                return
+            button.configure(
+                bg=button._base_bg,
+                fg=button._base_fg,
+                highlightbackground=button._base_border,
+            )
 
-def render_back_button(target: str, label: str) -> None:
-    if st.button(label, key=f"back_{target}_{st.session_state.active_page}"):
-        go(target)
+        button.bind("<Enter>", on_enter, add="+")
+        button.bind(
+            "<Leave>",
+            lambda _event: self.after(20, lambda: on_enter() if self._pointer_inside(button) else on_leave()),
+            add="+",
+        )
+        return button
 
+    def _register_ai_button(self, button: tk.Button) -> tk.Button:
+        self.ai_action_buttons.append(button)
+        return button
 
-def render_download_button(title: str, body: str, default_name: str, category: str, clear_callback: object, name_override: str | None = None) -> None:
-    package_bytes, zip_name, internal_path = build_export_package(title, body, default_name, category, name_override=name_override)
-    st.caption(f"Package path: {internal_path}")
-    st.download_button(
-        "Download Export Package",
-        data=package_bytes,
-        file_name=zip_name,
-        mime="application/zip",
-        key=f"download_{category}_{sanitize_filename(default_name)}",
-        use_container_width=True,
-        on_click=clear_callback,
-    )
+    def _styled_checkbutton(self, parent: tk.Widget, text: str, variable: tk.BooleanVar) -> tk.Checkbutton:
+        return tk.Checkbutton(
+            parent,
+            text=text,
+            variable=variable,
+            bg=PALETTE["panel"],
+            fg=PALETTE["text"],
+            activebackground=PALETTE["panel"],
+            activeforeground=PALETTE["text"],
+            selectcolor=PALETTE["panel_alt"],
+            highlightthickness=0,
+            bd=0,
+            font=self.body_font,
+        )
 
+    def _styled_radiobutton(self, parent: tk.Widget, text: str, variable: tk.StringVar, value: str) -> tk.Radiobutton:
+        return tk.Radiobutton(
+            parent,
+            text=text,
+            variable=variable,
+            value=value,
+            bg=PALETTE["panel"],
+            fg=PALETTE["text"],
+            activebackground=PALETTE["panel"],
+            activeforeground=PALETTE["text"],
+            selectcolor=PALETTE["panel_alt"],
+            highlightthickness=0,
+            bd=0,
+            font=self.body_font,
+        )
 
-def render_dashboard() -> None:
-    render_page_intro("dashboard")
+    def _labeled_entry(self, parent: tk.Widget, label: str, variable: tk.StringVar, hint: str) -> tk.Entry:
+        block = tk.Frame(parent, bg=PALETTE["panel"])
+        block.pack(fill="x", pady=(0, 16))
+        tk.Label(block, text=label, bg=PALETTE["panel"], fg=PALETTE["text"], font=self.label_font).pack(anchor="w")
+        shell = tk.Frame(block, bg=PALETTE["border"])
+        shell.pack(fill="x", pady=(8, 0))
+        entry = tk.Entry(
+            shell,
+            textvariable=variable,
+            bg=PALETTE["input"],
+            fg=PALETTE["text"],
+            insertbackground=PALETTE["text"],
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            font=self.body_font,
+            selectbackground=PALETTE["accent_dark"],
+            selectforeground=PALETTE["text"],
+        )
+        entry.pack(fill="x", padx=1, pady=1, ipady=10)
+        tk.Label(block, text=hint, bg=PALETTE["panel"], fg=PALETTE["muted"], font=self.small_font).pack(
+            anchor="w", pady=(6, 0)
+        )
+        return entry
 
-    col_a, col_b = st.columns([1.1, 0.9])
-    with col_a:
-        render_card_header(
+    def _labeled_text(
+        self,
+        parent: tk.Widget,
+        label: str,
+        height: int,
+        hint: str,
+        read_only: bool = False,
+    ) -> ScrolledText:
+        block = tk.Frame(parent, bg=PALETTE["panel"])
+        block.pack(fill="both", expand=True, pady=(0, 16))
+        tk.Label(block, text=label, bg=PALETTE["panel"], fg=PALETTE["text"], font=self.label_font).pack(anchor="w")
+        shell = tk.Frame(block, bg=PALETTE["border"])
+        shell.pack(fill="both", expand=True, pady=(8, 0))
+        text = ScrolledText(
+            shell,
+            height=height,
+            wrap="word",
+            bg=PALETTE["input"],
+            fg=PALETTE["text"],
+            insertbackground=PALETTE["text"],
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            font=self.body_font,
+            padx=14,
+            pady=14,
+            selectbackground=PALETTE["accent_dark"],
+            selectforeground=PALETTE["text"],
+        )
+        text.pack(fill="both", expand=True, padx=1, pady=1)
+        if read_only:
+            text.config(state="disabled")
+        tk.Label(block, text=hint, bg=PALETTE["panel"], fg=PALETTE["muted"], font=self.small_font).pack(
+            anchor="w", pady=(6, 0)
+        )
+        return text
+
+    def _metric_tile(self, parent: tk.Widget, label: str, variable: tk.StringVar, value_color: str) -> tk.Frame:
+        tile = tk.Frame(
+            parent,
+            bg=PALETTE["glass_inner"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["glass_border"],
+        )
+        label_widget = tk.Label(
+            tile,
+            text=label,
+            bg=PALETTE["glass_inner"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+        )
+        label_widget.pack(anchor="w", padx=14, pady=(12, 4))
+        value_widget = tk.Label(
+            tile,
+            textvariable=variable,
+            bg=PALETTE["glass_inner"],
+            fg=value_color,
+            font=self.metric_font,
+            justify="left",
+            wraplength=360,
+        )
+        value_widget.pack(anchor="w", padx=14, pady=(0, 12))
+
+        def on_enter() -> None:
+            tile.configure(bg=PALETTE["glass_hover"], highlightbackground=PALETTE["accent"])
+            label_widget.configure(bg=PALETTE["glass_hover"])
+            value_widget.configure(bg=PALETTE["glass_hover"])
+
+        def on_leave() -> None:
+            tile.configure(bg=PALETTE["glass_inner"], highlightbackground=PALETTE["glass_border"])
+            label_widget.configure(bg=PALETTE["glass_inner"])
+            value_widget.configure(bg=PALETTE["glass_inner"])
+
+        self._bind_hover_group(tile, [tile, label_widget, value_widget], on_enter, on_leave)
+        return tile
+
+    def _bullet(self, parent: tk.Widget, text: str) -> tk.Label:
+        return tk.Label(
+            parent,
+            text=f"- {text}",
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            justify="left",
+            wraplength=430,
+            anchor="w",
+        )
+
+    def _schedule_responsive_refresh(self, _event: tk.Event | None = None) -> None:
+        if self._responsive_after_id is not None:
+            self.after_cancel(self._responsive_after_id)
+        self._responsive_after_id = self.after(80, self._apply_responsive_layout)
+
+    def _apply_responsive_layout(self) -> None:
+        self._responsive_after_id = None
+        self._update_dashboard_layout()
+        self._update_quiz_layout()
+        self._update_essay_layout()
+
+    def _update_dashboard_layout(self) -> None:
+        if not self.dashboard_layout:
+            return
+
+        grid = self.dashboard_layout["grid"]
+        width = grid.winfo_width() or self.page_container.winfo_width() or self.winfo_width()
+        compact = width < 1160
+
+        profile = self.dashboard_layout["profile"]
+        preview = self.dashboard_layout["preview"]
+        launch = self.dashboard_layout["launch"]
+        notes = self.dashboard_layout["notes"]
+
+        for widget in (profile, preview, launch, notes):
+            widget.grid_forget()
+
+        if compact:
+            grid.grid_columnconfigure(0, weight=1)
+            grid.grid_columnconfigure(1, weight=0)
+            profile.grid(row=0, column=0, sticky="nsew", padx=0, pady=(0, 10))
+            preview.grid(row=1, column=0, sticky="nsew", padx=0, pady=(0, 10))
+            launch.grid(row=2, column=0, sticky="nsew", padx=0, pady=(0, 10))
+            notes.grid(row=3, column=0, sticky="nsew", padx=0, pady=(0, 10))
+        else:
+            grid.grid_columnconfigure(0, weight=5)
+            grid.grid_columnconfigure(1, weight=4)
+            profile.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=(0, 10))
+            preview.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=(0, 10))
+            launch.grid(row=1, column=0, sticky="nsew", padx=(0, 10), pady=(10, 0))
+            notes.grid(row=1, column=1, sticky="nsew", padx=(10, 0), pady=(10, 0))
+
+    def _update_quiz_layout(self) -> None:
+        if not self.quiz_layout:
+            return
+
+        grid = self.quiz_layout["grid"]
+        width = grid.winfo_width() or self.page_container.winfo_width() or self.winfo_width()
+        compact = width < 1160
+
+        intake = self.quiz_layout["intake"]
+        right = self.quiz_layout["right"]
+
+        intake.grid_forget()
+        right.grid_forget()
+
+        if compact:
+            grid.grid_columnconfigure(0, weight=1)
+            grid.grid_columnconfigure(1, weight=0)
+            intake.grid(row=0, column=0, sticky="nsew", padx=0, pady=(0, 10))
+            right.grid(row=1, column=0, sticky="nsew", padx=0, pady=(0, 10))
+        else:
+            grid.grid_columnconfigure(0, weight=5)
+            grid.grid_columnconfigure(1, weight=5)
+            intake.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=0)
+            right.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=0)
+
+    def _update_essay_layout(self) -> None:
+        if not self.essay_layout:
+            return
+
+        grid = self.essay_layout["grid"]
+        width = grid.winfo_width() or self.page_container.winfo_width() or self.winfo_width()
+        compact = width < 1160
+
+        build = self.essay_layout["build"]
+        result = self.essay_layout["result"]
+
+        build.grid_forget()
+        result.grid_forget()
+
+        if compact:
+            grid.grid_columnconfigure(0, weight=1)
+            grid.grid_columnconfigure(1, weight=0)
+            build.grid(row=0, column=0, sticky="nsew", padx=0, pady=(0, 10))
+            result.grid(row=1, column=0, sticky="nsew", padx=0, pady=(0, 10))
+        else:
+            grid.grid_columnconfigure(0, weight=4)
+            grid.grid_columnconfigure(1, weight=5)
+            build.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=0)
+            result.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=0)
+
+    def _build_dashboard_page(self) -> None:
+        page = self._create_page("dashboard")
+        self._build_page_header(
+            page,
+            "Dashboard",
+            "Save your identity, choose one main save folder, and let the app auto-create dedicated subfolders for every academic and developer tool.",
+        )
+
+        scroll_shell, scroll_body, _dashboard_canvas = self._create_scrollable_section(page)
+        scroll_shell.pack(fill="both", expand=True)
+
+        grid = tk.Frame(scroll_body, bg=PALETTE["bg"])
+        grid.pack(fill="both", expand=True, padx=(0, 4))
+        grid.grid_columnconfigure(0, weight=5)
+        grid.grid_columnconfigure(1, weight=4)
+        grid.grid_rowconfigure(0, weight=1)
+        grid.grid_rowconfigure(1, weight=1)
+
+        profile_card, profile_body = self._create_card(
+            grid,
             "Profile Section",
-            "Enter your name, decide whether to stamp today's date, then set one main export folder name for all web download packages.",
-            "Dashboard Identity",
+            "Enter your name, decide whether to stamp today's date, then choose one main folder where all generated files will be organized automatically.",
+            PALETTE["accent"],
         )
-        st.text_input("Enter your name", key="profile_name_input")
-        st.checkbox("Add date today", key="profile_include_date_input")
-        st.text_input("Main export folder name", key="profile_main_folder_input", help="Used inside downloaded zip packages as the main parent folder.")
-        st.markdown("#### Output Options")
-        st.checkbox("Include saved name in export", key="profile_output_include_name_input")
-        st.checkbox("Include date in export", key="profile_output_include_date_input")
-        st.checkbox("Include essay heading suggestion", key="profile_essay_include_heading_input")
-        st.checkbox("Include self-check tip", key="profile_essay_include_tip_input")
-        btn_a, btn_b = st.columns(2)
-        if btn_a.button("Save Profile", use_container_width=True):
-            save_profile()
-            st.success("Profile saved for this session.")
-        if btn_b.button("Clear Saved Profile", use_container_width=True):
-            clear_profile()
-            st.success("Profile cleared.")
+        profile_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=(0, 10))
+        self._labeled_entry(
+            profile_body,
+            "Enter your name",
+            self.name_input_var,
+            "This gets remembered locally in the app once you hit save.",
+        )
+        check_row = tk.Frame(profile_body, bg=PALETTE["panel"])
+        check_row.pack(fill="x", pady=(0, 12))
+        self._styled_checkbutton(check_row, "Add date today", self.include_date_var).pack(side="left")
+        action_row = tk.Frame(profile_body, bg=PALETTE["panel"])
+        action_row.pack(fill="x", pady=(8, 12))
+        self._make_button(action_row, "Save Profile", self.save_profile, variant="primary").pack(side="left", padx=(0, 10))
+        self._make_button(action_row, "Clear Saved Profile", self.clear_profile, variant="ghost").pack(side="left")
+        folder_row = tk.Frame(profile_body, bg=PALETTE["panel"])
+        folder_row.pack(fill="x", pady=(0, 10))
+        self._make_button(folder_row, "Choose Main Folder", self.choose_main_folder, variant="secondary").pack(side="left", padx=(0, 10))
+        self._make_button(folder_row, "Open Main Folder", self.open_main_folder, variant="ghost").pack(side="left")
+        tk.Label(
+            profile_body,
+            textvariable=self.main_folder_var,
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+            justify="left",
+            wraplength=560,
+        ).pack(anchor="w")
+        tk.Label(
+            profile_body,
+            text="Output Options",
+            bg=PALETTE["panel"],
+            fg=PALETTE["accent_soft"],
+            font=self.label_font,
+        ).pack(anchor="w", pady=(16, 8))
+        output_options = tk.Frame(profile_body, bg=PALETTE["panel"])
+        output_options.pack(fill="x", pady=(0, 6))
+        self._styled_checkbutton(
+            output_options,
+            "Include saved name in export",
+            self.output_include_name_var,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 18), pady=(0, 8))
+        self._styled_checkbutton(
+            output_options,
+            "Include date in export",
+            self.output_include_date_var,
+        ).grid(row=0, column=1, sticky="w", pady=(0, 8))
+        self._styled_checkbutton(
+            output_options,
+            "Include essay heading suggestion",
+            self.essay_include_heading_var,
+        ).grid(row=1, column=0, sticky="w", padx=(0, 18))
+        self._styled_checkbutton(
+            output_options,
+            "Include self-check tip",
+            self.essay_include_tip_var,
+        ).grid(row=1, column=1, sticky="w")
+        output_options.grid_columnconfigure(0, weight=1)
+        output_options.grid_columnconfigure(1, weight=1)
+        tk.Label(
+            profile_body,
+            text="These checkboxes affect exported Word output so you can keep the document clean or more detailed.",
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+            justify="left",
+            wraplength=560,
+        ).pack(anchor="w", pady=(6, 0))
 
-    with col_b:
-        render_card_header(
+        preview_card, preview_body = self._create_card(
+            grid,
             "Export Folder Routing",
-            "Web exports are downloaded as zip packages that preserve the same main folder and subfolder structure from the desktop version.",
-            "Download Structure",
+            "Choose one main folder and the app will automatically create separate export directories for all active tools inside it.",
+            PALETTE["info"],
         )
-        paths = folder_path_lines()
-        render_stat_card("Main folder", paths["main"])
-        render_stat_card(
-            "Academics suite",
-            "\n".join(
-                [
-                    paths["quiz"],
-                    paths["assignment"],
-                    paths["essay"],
-                    paths["activity"],
-                    paths["document"],
-                ]
-            ),
-        )
-        render_stat_card("Developer suite", paths["codefix"])
+        preview_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=(0, 10))
+        self._metric_tile(preview_body, "Main folder", self.main_folder_var, PALETTE["accent_soft"]).pack(fill="x", pady=(0, 12))
+        self._metric_tile(preview_body, "Academics suite folders", self.academics_folders_var, PALETTE["text"]).pack(fill="x", pady=(0, 12))
+        self._metric_tile(preview_body, "Developer suite folder", self.developer_folder_var, PALETTE["text"]).pack(fill="x", pady=(0, 12))
+        self._metric_tile(preview_body, "Routing note", self.folder_note_var, PALETTE["text"]).pack(fill="x")
 
-    launch_a, launch_b = st.columns(2)
-    with launch_a:
-        render_card_header(
+        launch_card, launch_body = self._create_card(
+            grid,
             "Quick Launch",
-            "Open the academics hub for school tools or the developer hub for code fixing.",
-            "Next Step",
+            "The suite is now grouped into clean hubs so the menu stays minimal even with more tools available.",
+            PALETTE["success"],
         )
-        if st.button("Open Academics Hub", key="open_academics_hub", use_container_width=True, type="primary"):
-            go("academics")
-        if st.button("Open Developer Hub", key="open_developer_hub", use_container_width=True):
-            go("developer")
-    with launch_b:
-        render_card_header(
+        launch_card.grid(row=1, column=0, sticky="nsew", padx=(0, 10), pady=(10, 0))
+        tk.Label(
+            launch_body,
+            text="Go straight where you need",
+            bg=PALETTE["panel"],
+            fg=PALETTE["accent_soft"],
+            font=("Segoe UI Semibold", 12),
+        ).pack(anchor="w")
+        tk.Label(
+            launch_body,
+            text="Use the Academics hub for school tools and the Developer hub for code fixing. Each workspace has its own page and autosave folder.",
+            bg=PALETTE["panel"],
+            fg=PALETTE["text"],
+            wraplength=520,
+            justify="left",
+            font=("Segoe UI", 13),
+        ).pack(anchor="w", pady=(8, 18))
+        launch_buttons = tk.Frame(launch_body, bg=PALETTE["panel"])
+        launch_buttons.pack(anchor="w")
+        self._make_button(launch_buttons, "Open Academics Hub", lambda: self.show_page("academics"), variant="primary").pack(
+            side="left", padx=(0, 10)
+        )
+        self._make_button(launch_buttons, "Open Developer Hub", lambda: self.show_page("developer"), variant="secondary").pack(
+            side="left"
+        )
+
+        notes_card, notes_body = self._create_card(
+            grid,
             "How This Flow Works",
-            "The structure stays simple: save your profile, open a hub, choose a tool, then download the finished package.",
-            "Guide",
+            "The dashboard now manages both your identity settings and your export folder routing.",
+            PALETTE["warning"],
         )
-        st.markdown(
-            """
-            1. Dashboard stores your active profile for this session.
-            2. Academics contains quiz, assignment, essay, activity, and document tools.
-            3. Developer contains the code error fixer.
-            4. Every export downloads as a zip file with the correct Hugyoku folder structure.
-            """
+        notes_card.grid(row=1, column=1, sticky="nsew", padx=(10, 0), pady=(10, 0))
+        for line in [
+            "1. Save your name and optional date from this dashboard once.",
+            "2. Choose a single main folder and the app will create subfolders for quiz, assignment, essay, activity, document, and code-fix exports.",
+            "3. Open a hub, choose one focused tool page, and the export will route itself to the correct subfolder automatically.",
+        ]:
+            self._bullet(notes_body, line).pack(anchor="w", fill="x", pady=(0, 10))
+
+        self.dashboard_layout = {
+            "grid": grid,
+            "profile": profile_card,
+            "preview": preview_card,
+            "launch": launch_card,
+            "notes": notes_card,
+        }
+
+    def _hub_tool_card(
+        self,
+        parent: tk.Frame,
+        card_title: str,
+        number: str,
+        description: str,
+        folder_var: tk.StringVar,
+        button_text: str,
+        command: object,
+        accent: str,
+        variant: str = "secondary",
+    ) -> tk.Frame:
+        card, body = self._create_card(parent, card_title, description, accent)
+        card.pack(fill="x", pady=(0, 14))
+        tk.Label(
+            body,
+            text=number,
+            bg=PALETTE["glass_inner"],
+            fg=PALETTE["accent_soft"],
+            font=("Segoe UI Semibold", 13),
+        ).pack(anchor="w")
+        tk.Label(
+            body,
+            textvariable=folder_var,
+            bg=PALETTE["glass_inner"],
+            fg=PALETTE["muted"],
+            wraplength=900,
+            justify="left",
+            font=self.small_font,
+        ).pack(anchor="w", pady=(8, 12))
+        self._make_button(body, button_text, command, variant=variant).pack(anchor="w")
+        return card
+
+    def _build_tool_page_shell(
+        self,
+        key: str,
+        title: str,
+        subtitle: str,
+        folder_var: tk.StringVar,
+        back_label: str,
+        back_target: str,
+    ) -> tk.Frame:
+        page = self._create_page(key)
+        self._build_page_header(page, title, subtitle)
+        self._make_button(page, back_label, lambda target=back_target: self.show_page(target), variant="ghost").pack(
+            anchor="w", pady=(0, 10)
+        )
+        tk.Label(
+            page,
+            textvariable=folder_var,
+            bg=PALETTE["bg"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+            wraplength=980,
+            justify="left",
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 12))
+        tool_host = tk.Frame(page, bg=PALETTE["bg"])
+        tool_host.pack(fill="both", expand=True)
+        return tool_host
+
+    def _build_academics_page(self) -> None:
+        page = self._create_page("academics")
+        self._build_page_header(
+            page,
+            "Academics",
+            "Choose a focused school workspace. Each tool now has its own page and autosave subfolder so the layout stays minimal, clearer, and easier to use.",
         )
 
+        scroll_shell, scroll_body, _academics_canvas = self._create_scrollable_section(page)
+        scroll_shell.pack(fill="both", expand=True)
 
-def render_academics_hub() -> None:
-    render_page_intro("academics")
-    paths = folder_path_lines()
+        hub = tk.Frame(scroll_body, bg=PALETTE["bg"])
+        hub.pack(fill="both", expand=True, padx=(0, 4))
 
-    render_tool_hub_card(
-        "Quiz Solver Workspace",
-        "Read quiz files, summarize the task, and generate guided response support in a dedicated workspace.",
-        paths["quiz"],
-        "Open Quiz Solver",
-        "quiz",
-        True,
-    )
-    render_tool_hub_card(
-        "Assignment Solver Workspace",
-        "Analyze assignments from pasted text or uploaded files, then generate a guided draft or response plan.",
-        paths["assignment"],
-        "Open Assignment Solver",
-        "assignment",
-    )
-    render_tool_hub_card(
-        "Essay Generator Workspace",
-        "Build long-form essay drafts with output options, optional name overrides, and cleaner export formatting.",
-        paths["essay"],
-        "Open Essay Generator",
-        "essay",
-    )
-    render_tool_hub_card(
-        "Activity Generator Workspace",
-        "Generate worksheets, reflections, drills, or classroom activities from a topic and instruction set.",
-        paths["activity"],
-        "Open Activity Generator",
-        "activity",
-    )
-    render_tool_hub_card(
-        "Document Generator Workspace",
-        "Create structured school documents like handouts, reports, reviewers, and formal academic materials.",
-        paths["document"],
-        "Open Document Generator",
-        "document",
-    )
+        intro_card, intro_body = self._create_card(
+            hub,
+            "Academic Navigation",
+            "Open the exact tool you need. Quiz, assignment, essay, activity, and document flows are now separated into their own workspaces.",
+            PALETTE["accent"],
+        )
+        intro_card.pack(fill="x", pady=(0, 14))
+        tk.Label(
+            intro_body,
+            textvariable=self.academics_folders_var,
+            bg=PALETTE["glass_inner"],
+            fg=PALETTE["muted"],
+            wraplength=900,
+            justify="left",
+            font=self.small_font,
+        ).pack(anchor="w")
 
+        self._hub_tool_card(
+            hub,
+            "Quiz Solver Workspace",
+            "01  Quiz Solver",
+            "Read quiz files, summarize the task, and generate guided response support in a dedicated workspace.",
+            self.quiz_folder_var,
+            "Open Quiz Solver",
+            lambda: self.show_academic_tool("quiz"),
+            PALETTE["accent"],
+            "primary",
+        )
+        self._hub_tool_card(
+            hub,
+            "Assignment Solver Workspace",
+            "02  Assignment Solver",
+            "Analyze assignments from pasted text or uploaded files, then generate a guided draft or response plan.",
+            self.assignment_folder_var,
+            "Open Assignment Solver",
+            lambda: self.show_academic_tool("assignment"),
+            PALETTE["info"],
+        )
+        self._hub_tool_card(
+            hub,
+            "Essay Generator Workspace",
+            "03  Essay Generator",
+            "Build long-form essay drafts with output options, optional name overrides, and cleaner export formatting.",
+            self.essay_folder_var,
+            "Open Essay Generator",
+            lambda: self.show_academic_tool("essay"),
+            PALETTE["warning"],
+        )
+        self._hub_tool_card(
+            hub,
+            "Activity Generator Workspace",
+            "04  Activity Generator",
+            "Generate worksheets, reflections, or classroom activities from a topic, level, and instruction set.",
+            self.activity_folder_var,
+            "Open Activity Generator",
+            lambda: self.show_academic_tool("activity"),
+            PALETTE["success"],
+        )
+        self._hub_tool_card(
+            hub,
+            "Document Generator Workspace",
+            "05  Document Generator",
+            "Create structured school documents like handouts, reports, and study materials from a simple request.",
+            self.document_folder_var,
+            "Open Document Generator",
+            lambda: self.show_academic_tool("document"),
+            PALETTE["accent_soft"],
+        )
 
-def render_developer_hub() -> None:
-    render_page_intro("developer")
-    paths = folder_path_lines()
-    render_tool_hub_card(
-        "Code Error Fixer Workspace",
-        "Paste code, explain the bug or error, and get a cleaner fix plus a short explanation of what changed.",
-        paths["codefix"],
-        "Open Code Error Fixer",
-        "codefix",
-        True,
-    )
+        guide_card, guide_body = self._create_card(
+            hub,
+            "How This Flow Works",
+            "The structure is now cleaner: enter a hub, choose a tool, work on a single task, export, then start again with a fresh workspace.",
+            PALETTE["info"],
+        )
+        guide_card.pack(fill="x")
+        for line in [
+            "1. Dashboard stores your profile and main save folder.",
+            "2. Academics contains school-focused generators and solvers.",
+            "3. Each academic tool autosaves into its own dedicated subfolder.",
+        ]:
+            tk.Label(
+                guide_body,
+                text=line,
+                bg=PALETTE["glass_inner"],
+                fg=PALETTE["muted"],
+                justify="left",
+                wraplength=900,
+                anchor="w",
+            ).pack(anchor="w", fill="x", pady=(0, 10))
 
-def render_quiz_page(ai_ready: bool) -> None:
-    render_page_intro("quiz")
-    render_back_button("academics", "Back To Academics")
-    st.caption(folder_path_lines()["quiz"])
+    def _build_developer_page(self) -> None:
+        page = self._create_page("developer")
+        self._build_page_header(
+            page,
+            "Developer",
+            "A separate hub for coding support. Right now this contains a focused code error fixer so it does not clutter the academics tools.",
+        )
 
-    left, right = st.columns(2)
-    with left:
-        render_card_header("Quiz Intake", "Upload a file or paste quiz content directly. The app reads it first before generating support.")
-        uploaded = st.file_uploader("Upload quiz file", type=["docx", "pdf", "txt", "md"], key="quiz_upload_widget")
-        load_col, clear_col = st.columns(2)
-        if load_col.button("Load Uploaded File", key="quiz_load_file", use_container_width=True):
-            if uploaded is None:
-                st.warning("Upload a file first.")
-            else:
-                try:
-                    st.session_state.quiz_source_text = read_uploaded_document(uploaded)
-                    st.session_state.quiz_upload_name = uploaded.name
-                    st.session_state.quiz_summary = ""
-                    st.session_state.quiz_response = ""
-                    st.session_state.quiz_prompt = ""
-                    st.success(f"Loaded {uploaded.name} into the quiz workspace.")
-                except Exception as exc:
-                    st.error(str(exc))
-        if clear_col.button("Clear Quiz Input", key="quiz_clear_input", use_container_width=True):
-            clear_quiz_workspace()
-            st.rerun()
-        st.caption(st.session_state.quiz_upload_name)
-        st.caption(f"{count_words(st.session_state.quiz_source_text)} words | {len(st.session_state.quiz_source_text.strip())} characters")
-        st.text_area("Quiz content", key="quiz_source_text", height=360)
-        if st.button("Analyze Quiz", key="quiz_analyze", use_container_width=True, type="secondary", disabled=not ai_ready):
-            source = st.session_state.quiz_source_text.strip()
-            if not source:
-                st.warning("Upload or paste quiz content before analyzing it.")
-            else:
-                prompt = (
-                    "Analyze the following academic material for educational review.\n"
-                    f"Saved dashboard profile:\n{identity_block() or 'No saved profile'}\n\n"
-                    f"Source content:\n{source}\n\n"
-                    "Return these sections clearly:\n"
-                    "1. Summary\n"
-                    "2. What task or instructions seem to be required\n"
-                    "3. Important topics, clues, or constraints\n"
-                    "4. Best next step for the student"
-                )
-                result = run_generation(prompt, "quiz analysis")
-                if result:
-                    st.session_state.quiz_summary = result
-                    st.success("Quiz analysis complete.")
+        scroll_shell, scroll_body, _developer_canvas = self._create_scrollable_section(page)
+        scroll_shell.pack(fill="both", expand=True)
 
-    with right:
-        render_card_header("Summary And Task Reading", "The assistant summarizes the uploaded content first so you can understand the task before continuing.")
-        st.text_area("Summary preview", value=st.session_state.quiz_summary, height=220, disabled=True, key="quiz_summary_view")
-        quiz_mode = st.radio("Response mode", options=["complete", "specific"], index=0 if st.session_state.quiz_mode == "complete" else 1, horizontal=True, format_func=lambda item: "Do it in full" if item == "complete" else "Use specific prompt")
-        st.session_state.quiz_mode = quiz_mode
-        st.text_area("Specific prompt", key="quiz_prompt", height=120)
-        gen_col, clear_col = st.columns(2)
-        if gen_col.button("Generate Quiz Guidance", key="quiz_generate", use_container_width=True, type="primary", disabled=not ai_ready):
-            source = st.session_state.quiz_source_text.strip()
-            summary = st.session_state.quiz_summary.strip()
-            custom_prompt = st.session_state.quiz_prompt.strip()
-            if not source:
-                st.warning("Upload or paste quiz content before generating a response.")
-            elif not summary:
-                st.warning("Run the summary step first so the app can read the task before generating a response.")
-            elif st.session_state.quiz_mode == "specific" and not custom_prompt:
-                st.warning("Add a specific prompt or switch to full mode.")
-            else:
-                instructions = (
-                    "Create a complete educational response based on the content. If there are visible questions, answer them in order and include short explanations. If the file describes a task instead of direct questions, complete the task as fully as possible."
-                    if st.session_state.quiz_mode == "complete"
-                    else "Follow the user's specific prompt while staying grounded in the uploaded content and analysis.\nSpecific prompt: " + custom_prompt
-                )
-                prompt = (
-                    "Use the uploaded quiz/activity content for educational support.\n"
-                    f"Saved dashboard profile:\n{identity_block() or 'No saved profile'}\n\n"
-                    f"Analysis already prepared:\n{summary}\n\n"
-                    f"Source content:\n{source}\n\n"
-                    f"Instructions:\n{instructions}\n\n"
-                    "Structure the answer with:\n"
-                    "1. Task understanding\n"
-                    "2. Response\n"
-                    "3. Short explanation or rationale\n\n"
-                    "Keep the output clean and readable. Avoid markdown symbols like ### unless a heading is truly needed."
-                )
-                result = run_generation(prompt, "quiz response")
-                if result:
-                    st.session_state.quiz_response = result
-                    st.success("Quiz guidance ready.")
-        if clear_col.button("Clear Result", key="quiz_clear_result", use_container_width=True):
-            st.session_state.quiz_response = ""
-            st.rerun()
-        st.text_area("Generated response", value=st.session_state.quiz_response, height=300, disabled=True, key="quiz_response_view")
-        if st.session_state.quiz_response.strip():
-            export_title = f"Quiz Support: {Path(st.session_state.quiz_upload_name).stem.replace('_', ' ').title()}" if st.session_state.quiz_upload_name != "No file loaded yet" else "Quiz Support"
-            export_name = sanitize_filename(Path(st.session_state.quiz_upload_name).stem if st.session_state.quiz_upload_name != "No file loaded yet" else "quiz_support")
-            render_download_button(export_title, st.session_state.quiz_response, export_name, "quiz", clear_quiz_workspace)
+        hub = tk.Frame(scroll_body, bg=PALETTE["bg"])
+        hub.pack(fill="both", expand=True, padx=(0, 4))
 
+        intro_card, intro_body = self._create_card(
+            hub,
+            "Developer Navigation",
+            "Developer tools live separately from school tools so the menu stays cleaner and easier to scan on smaller windows.",
+            PALETTE["warning"],
+        )
+        intro_card.pack(fill="x", pady=(0, 14))
+        tk.Label(
+            intro_body,
+            textvariable=self.developer_folder_var,
+            bg=PALETTE["glass_inner"],
+            fg=PALETTE["muted"],
+            wraplength=900,
+            justify="left",
+            font=self.small_font,
+        ).pack(anchor="w")
 
-def render_assignment_page(ai_ready: bool) -> None:
-    render_page_intro("assignment")
-    render_back_button("academics", "Back To Academics")
-    st.caption(folder_path_lines()["assignment"])
+        self._hub_tool_card(
+            hub,
+            "Code Error Fixer Workspace",
+            "01  Code Error Fixer",
+            "Paste code, explain the bug or error, and get a cleaner fix plus a short explanation of what changed.",
+            self.codefix_folder_var,
+            "Open Code Error Fixer",
+            lambda: self.show_page("codefix"),
+            PALETTE["warning"],
+            "primary",
+        )
 
-    left, right = st.columns(2)
-    with left:
-        render_card_header("Assignment Intake", "Upload a document or paste the assignment manually, then let the app analyze the task before generating guidance.")
-        uploaded = st.file_uploader("Upload assignment file", type=["docx", "pdf", "txt", "md"], key="assignment_upload_widget")
-        load_col, clear_col = st.columns(2)
-        if load_col.button("Load Uploaded File", key="assignment_load_file", use_container_width=True):
-            if uploaded is None:
-                st.warning("Upload an assignment file first.")
-            else:
-                try:
-                    st.session_state.assignment_source_text = read_uploaded_document(uploaded)
-                    st.session_state.assignment_upload_name = uploaded.name
-                    st.session_state.assignment_summary = ""
-                    st.session_state.assignment_response = ""
-                    st.success(f"Loaded {uploaded.name} into the assignment workspace.")
-                except Exception as exc:
-                    st.error(str(exc))
-        if clear_col.button("Clear Assignment Input", key="assignment_clear_input", use_container_width=True):
-            clear_assignment_workspace()
-            st.rerun()
-        st.caption(st.session_state.assignment_upload_name)
-        st.caption(f"{count_words(st.session_state.assignment_source_text)} words | {len(st.session_state.assignment_source_text.strip())} characters")
-        st.text_area("Assignment content", key="assignment_source_text", height=320)
-        assignment_mode = st.radio("Assignment mode", options=["guided", "complete"], index=0 if st.session_state.assignment_mode == "guided" else 1, horizontal=True, format_func=lambda item: "Guided response" if item == "guided" else "Full draft")
-        st.session_state.assignment_mode = assignment_mode
-        st.text_area("Specific prompt (optional)", key="assignment_prompt", height=110)
-        action_a, action_b = st.columns(2)
-        if action_a.button("Analyze Assignment", key="assignment_analyze", use_container_width=True, type="secondary", disabled=not ai_ready):
-            source = st.session_state.assignment_source_text.strip()
-            if not source:
-                st.warning("Upload or paste assignment content before analyzing it.")
-            else:
-                prompt = (
-                    "Analyze the following assignment for educational review.\n"
-                    f"Saved dashboard profile:\n{identity_block() or 'No saved profile'}\n\n"
-                    f"Assignment content:\n{source}\n\n"
-                    "Return these sections clearly:\n"
-                    "1. Assignment summary\n"
-                    "2. What is being asked\n"
-                    "3. Important requirements or constraints\n"
-                    "4. Best approach for the student"
-                )
-                result = run_generation(prompt, "assignment analysis")
-                if result:
-                    st.session_state.assignment_summary = result
-                    st.success("Assignment analysis complete.")
-        if action_b.button("Generate Assignment Guidance", key="assignment_generate", use_container_width=True, type="primary", disabled=not ai_ready):
-            source = st.session_state.assignment_source_text.strip()
-            summary = st.session_state.assignment_summary.strip()
-            custom_prompt = st.session_state.assignment_prompt.strip()
-            if not source:
-                st.warning("Upload or paste assignment content before generating a response.")
-            elif not summary:
-                st.warning("Run the assignment analysis first.")
-            else:
-                instructions = (
-                    "Create a full draft response based on the assignment while keeping it clear, organized, and educational."
-                    if st.session_state.assignment_mode == "complete"
-                    else "Create a guided response that explains how to approach the assignment and includes a sample draft the student can review."
-                )
-                if custom_prompt:
-                    instructions = f"{instructions}\nSpecific prompt: {custom_prompt}"
-                prompt = (
-                    "Use the uploaded assignment for educational support.\n"
-                    f"Saved dashboard profile:\n{identity_block() or 'No saved profile'}\n\n"
-                    f"Assignment analysis:\n{summary}\n\n"
-                    f"Assignment content:\n{source}\n\n"
-                    f"Instructions:\n{instructions}\n\n"
-                    "Structure the answer with:\n"
-                    "1. Task understanding\n"
-                    "2. Solution plan\n"
-                    "3. Sample answer or draft\n"
-                    "4. Notes to review\n\n"
-                    "Keep the output clean and readable. Avoid markdown symbols like ### unless a heading is truly needed."
-                )
-                result = run_generation(prompt, "assignment response")
-                if result:
-                    st.session_state.assignment_response = result
-                    st.success("Assignment guidance ready.")
+    def _build_quiz_page(self) -> None:
+        tool_host = self._build_tool_page_shell(
+            "quiz",
+            "Quiz Solver",
+            "A dedicated quiz solver workspace for reading files, understanding the task, and generating a guided response without mixing in other tools.",
+            self.quiz_folder_var,
+            "Back To Academics",
+            "academics",
+        )
+        self._build_quiz_tool(tool_host)
 
-    with right:
-        render_card_header("Assignment Response", "The assignment summary appears first, followed by the generated guided response or sample draft.")
-        st.text_area("Assignment summary", value=st.session_state.assignment_summary, height=220, disabled=True, key="assignment_summary_view")
-        st.text_area("Generated response", value=st.session_state.assignment_response, height=280, disabled=True, key="assignment_response_view")
-        if st.button("Clear Result", key="assignment_clear_result", use_container_width=True):
-            st.session_state.assignment_response = ""
-            st.rerun()
-        if st.session_state.assignment_response.strip():
-            export_title = f"Assignment Support: {Path(st.session_state.assignment_upload_name).stem.replace('_', ' ').title()}" if st.session_state.assignment_upload_name != "No assignment file loaded yet" else "Assignment Support"
-            export_name = sanitize_filename(Path(st.session_state.assignment_upload_name).stem if st.session_state.assignment_upload_name != "No assignment file loaded yet" else "assignment_support")
-            render_download_button(export_title, st.session_state.assignment_response, export_name, "assignment", clear_assignment_workspace)
+    def _build_essay_page(self) -> None:
+        tool_host = self._build_tool_page_shell(
+            "essay",
+            "Essay Generator",
+            "A dedicated essay generator workspace for building drafts, customizing export formatting, and saving to the essay subfolder.",
+            self.essay_folder_var,
+            "Back To Academics",
+            "academics",
+        )
+        self._build_essay_tool(tool_host)
 
-def render_essay_page(ai_ready: bool) -> None:
-    render_page_intro("essay")
-    render_back_button("academics", "Back To Academics")
-    st.caption(folder_path_lines()["essay"])
+    def _build_activity_page(self) -> None:
+        tool_host = self._build_tool_page_shell(
+            "activity",
+            "Activity Generator",
+            "Generate a classroom activity, worksheet, reflection prompt, or guided exercise from a topic and instruction set.",
+            self.activity_folder_var,
+            "Back To Academics",
+            "academics",
+        )
+        self._build_activity_tool(tool_host)
 
-    left, right = st.columns(2)
-    with left:
-        render_card_header(
+    def _build_document_page(self) -> None:
+        tool_host = self._build_tool_page_shell(
+            "document",
+            "Document Generator",
+            "Generate structured academic documents like study handouts, reports, or simple formal school papers from a clean prompt.",
+            self.document_folder_var,
+            "Back To Academics",
+            "academics",
+        )
+        self._build_document_tool(tool_host)
+
+    def _build_assignment_page(self) -> None:
+        tool_host = self._build_tool_page_shell(
+            "assignment",
+            "Assignment Solver",
+            "Use a dedicated assignment page for uploaded tasks, guided analysis, and a structured sample response or completion plan.",
+            self.assignment_folder_var,
+            "Back To Academics",
+            "academics",
+        )
+        self._build_assignment_tool(tool_host)
+
+    def _build_codefix_page(self) -> None:
+        tool_host = self._build_tool_page_shell(
+            "codefix",
+            "Code Error Fixer",
+            "Use a separate code workspace to paste code, error messages, and expected behavior, then generate a fix with a short explanation.",
+            self.codefix_folder_var,
+            "Back To Developer",
+            "developer",
+        )
+        self._build_codefix_tool(tool_host)
+
+    def _build_quiz_tool(self, parent: tk.Frame) -> None:
+        scroll_shell, scroll_body, _quiz_canvas = self._create_scrollable_section(parent)
+        scroll_shell.pack(fill="both", expand=True)
+
+        grid = tk.Frame(scroll_body, bg=PALETTE["bg"])
+        grid.pack(fill="both", expand=True, padx=(0, 4))
+        grid.grid_columnconfigure(0, weight=5)
+        grid.grid_columnconfigure(1, weight=5)
+        grid.grid_rowconfigure(0, weight=1)
+
+        intake_card, intake_body = self._create_card(
+            grid,
+            "Quiz Intake",
+            "Upload a Word, PDF, text, or markdown file, or paste the content directly. The app reads it first, then you can choose how to continue.",
+            PALETTE["accent"],
+        )
+        intake_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+
+        file_row = tk.Frame(intake_body, bg=PALETTE["panel"])
+        file_row.pack(fill="x", pady=(0, 14))
+        self._make_button(file_row, "Upload File", self.load_quiz_file, variant="primary").pack(side="left", padx=(0, 10))
+        self._make_button(file_row, "Clear Quiz Input", self.clear_quiz_workspace, variant="ghost").pack(side="left")
+        tk.Label(
+            intake_body,
+            textvariable=self.quiz_file_var,
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+            justify="left",
+            wraplength=580,
+        ).pack(anchor="w", pady=(0, 10))
+        self._metric_tile(intake_body, "Content stats", self.quiz_stats_var, PALETTE["accent_soft"]).pack(fill="x", pady=(0, 14))
+        self.quiz_source_text = self._labeled_text(
+            intake_body,
+            "Quiz content",
+            20,
+            "If you do not upload a file, you can paste the full content here manually.",
+        )
+        self.quiz_source_text.bind("<KeyRelease>", lambda _event: self.refresh_quiz_stats())
+        analyze_button = self._make_button(intake_body, "Analyze Quiz", self.start_quiz_analysis, variant="secondary")
+        self._register_ai_button(analyze_button).pack(anchor="w")
+
+        right = tk.Frame(grid, bg=PALETTE["bg"])
+        right.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        right.grid_rowconfigure(0, weight=4)
+        right.grid_rowconfigure(1, weight=5)
+        right.grid_columnconfigure(0, weight=1)
+
+        summary_card, summary_body = self._create_card(
+            right,
+            "Summary And Task Reading",
+            "The assistant first summarizes the uploaded content and explains what task appears to be requested.",
+            PALETTE["info"],
+        )
+        summary_card.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+        tk.Label(
+            summary_body,
+            textvariable=self.quiz_progress_var,
+            bg=PALETTE["panel_alt"],
+            fg=PALETTE["accent_soft"],
+            font=self.label_font,
+            padx=14,
+            pady=8,
+        ).pack(anchor="w", pady=(0, 12))
+        self.quiz_summary_text = self._labeled_text(
+            summary_body,
+            "Summary preview",
+            11,
+            "This first pass should help you understand the file before asking for a full response.",
+            read_only=True,
+        )
+
+        response_card, response_body = self._create_card(
+            right,
+            "Response Builder",
+            "After the summary, choose either a full response or a custom prompt tied to the uploaded content.",
+            PALETTE["success"],
+        )
+        response_card.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        mode_row = tk.Frame(response_body, bg=PALETTE["panel"])
+        mode_row.pack(fill="x", pady=(0, 10))
+        self._styled_radiobutton(mode_row, "Do it in full", self.quiz_mode_var, "complete").pack(side="left", padx=(0, 16))
+        self._styled_radiobutton(mode_row, "Use specific prompt", self.quiz_mode_var, "specific").pack(side="left")
+        self.quiz_prompt_text = self._labeled_text(
+            response_body,
+            "Specific prompt",
+            5,
+            "Use this when you want a custom instruction after the summary, for example: answer only part 2 or explain each item one by one.",
+        )
+        actions = tk.Frame(response_body, bg=PALETTE["panel"])
+        actions.pack(fill="x", pady=(0, 12))
+        self.quiz_generate_button = self._register_ai_button(
+            self._make_button(actions, "Generate Quiz Guidance", self.start_quiz_response, variant="primary")
+        )
+        self.quiz_generate_button.pack(side="left", padx=(0, 10))
+        self.quiz_export_button = self._make_button(actions, "Export Result", self.export_quiz_result, variant="secondary")
+        self.quiz_export_button.pack(side="left", padx=(0, 10))
+        self.quiz_export_button.config(state="disabled")
+        self._make_button(actions, "Clear Result", self.clear_quiz_result, variant="ghost").pack(side="left")
+        self.quiz_result_text = self._labeled_text(
+            response_body,
+            "Generated response",
+            11,
+            "Full response or prompt-based response appears here.",
+            read_only=True,
+        )
+
+        self.quiz_layout = {
+            "grid": grid,
+            "intake": intake_card,
+            "right": right,
+        }
+
+    def _build_essay_tool(self, parent: tk.Frame) -> None:
+        scroll_shell, scroll_body, _essay_canvas = self._create_scrollable_section(parent)
+        scroll_shell.pack(fill="both", expand=True)
+
+        grid = tk.Frame(scroll_body, bg=PALETTE["bg"])
+        grid.pack(fill="both", expand=True, padx=(0, 4))
+        grid.grid_columnconfigure(0, weight=4)
+        grid.grid_columnconfigure(1, weight=5)
+        grid.grid_rowconfigure(0, weight=1)
+
+        build_card, build_body = self._create_card(
+            grid,
             "Essay Builder",
             "Set the title, add an optional custom instruction, choose the target length, and pick English, Tagalog, or both for Taglish.",
+            PALETTE["warning"],
         )
-        st.text_input("Essay title", key="essay_title")
-        st.text_area("Specific prompt (optional)", key="essay_prompt", height=160)
-        st.number_input("Target word count", min_value=100, max_value=3000, step=50, key="essay_word_count")
-        lang_a, lang_b = st.columns(2)
-        lang_a.checkbox("Tagalog", key="essay_tagalog")
-        lang_b.checkbox("English", key="essay_english")
-        render_card_header(
-            "Essay Export Format",
-            "Adjust what gets attached to the final essay output. The specific export name is optional and can override the saved dashboard name for this essay only.",
+        build_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self._labeled_entry(
+            build_body,
+            "Essay title",
+            self.essay_title_var,
+            "This becomes the essay topic and export title by default.",
         )
-        st.text_input("Specific export name (optional)", key="essay_specific_name")
-        st.checkbox("Include saved or specific name in export", key="profile_output_include_name_input")
-        st.checkbox("Include date in export", key="profile_output_include_date_input")
-        st.checkbox("Include essay heading suggestion", key="profile_essay_include_heading_input")
-        st.checkbox("Include self-check tip", key="profile_essay_include_tip_input")
-        st.info("Save Profile from the dashboard if you want these export settings to become the active saved defaults.")
-        action_a, action_b = st.columns(2)
-        if action_a.button("Generate Essay", key="essay_generate", use_container_width=True, type="primary", disabled=not ai_ready):
-            title = st.session_state.essay_title.strip()
-            prompt_text = st.session_state.essay_prompt.strip()
-            language = essay_language()
-            if not title:
-                st.warning("Enter the essay title before generating.")
-            elif language is None:
-                st.warning("Select Tagalog, English, or both for Taglish.")
-            else:
-                prompt = (
-                    "Write a polished educational essay draft.\n"
-                    f"Saved dashboard profile:\n{identity_block() or 'No saved profile'}\n\n"
-                    f"Essay title: {title}\n"
-                    f"Target length: about {int(st.session_state.essay_word_count)} words\n"
-                    f"Language: {language}\n"
-                    f"Specific prompt: {prompt_text or 'No extra prompt provided'}\n\n"
-                    "Return these plain-text sections in this exact order:\n"
-                    "Heading Suggestion:\n"
-                    "Essay Body:\n"
-                    "Self-Check Tip:\n\n"
-                    "Do not use markdown symbols like ### or ####."
-                )
-                result = run_generation(prompt, "essay draft")
-                if result:
-                    st.session_state.essay_response = result
-                    st.success("Essay draft ready.")
-        if action_b.button("Clear Essay Form", key="essay_clear_form", use_container_width=True):
-            clear_essay_form()
-            clear_essay_result()
-            st.rerun()
+        self.essay_prompt_text = self._labeled_text(
+            build_body,
+            "Specific prompt (optional)",
+            6,
+            "Examples: persuasive angle, reflective tone, or points that must be included.",
+        )
+        word_row = tk.Frame(build_body, bg=PALETTE["panel"])
+        word_row.pack(fill="x", pady=(0, 16))
+        tk.Label(word_row, text="Target word count", bg=PALETTE["panel"], fg=PALETTE["text"], font=self.label_font).pack(anchor="w")
+        spin_shell = tk.Frame(word_row, bg=PALETTE["border"])
+        spin_shell.pack(anchor="w", pady=(8, 0))
+        self.essay_word_spinbox = tk.Spinbox(
+            spin_shell,
+            from_=100,
+            to=3000,
+            increment=50,
+            textvariable=self.essay_word_count_var,
+            bg=PALETTE["input"],
+            fg=PALETTE["text"],
+            insertbackground=PALETTE["text"],
+            buttonbackground=PALETTE["panel_alt"],
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            width=12,
+            font=self.body_font,
+        )
+        self.essay_word_spinbox.pack(padx=1, pady=1, ipady=8)
+        tk.Label(word_row, text="Choose a target and the model will aim around that length.", bg=PALETTE["panel"], fg=PALETTE["muted"], font=self.small_font).pack(anchor="w", pady=(6, 0))
 
-    with right:
-        render_card_header(
+        language_box = tk.Frame(build_body, bg=PALETTE["panel_alt"], highlightthickness=1, highlightbackground=PALETTE["border"])
+        language_box.pack(fill="x", pady=(0, 16))
+        tk.Label(language_box, text="Language selection", bg=PALETTE["panel_alt"], fg=PALETTE["text"], font=self.label_font).pack(anchor="w", padx=14, pady=(12, 8))
+        checks = tk.Frame(language_box, bg=PALETTE["panel_alt"])
+        checks.pack(anchor="w", padx=12, pady=(0, 12))
+        self._styled_checkbutton(checks, "Tagalog", self.essay_tagalog_var).pack(side="left", padx=(0, 16))
+        self._styled_checkbutton(checks, "English", self.essay_english_var).pack(side="left")
+
+        format_box = tk.Frame(
+            build_body,
+            bg=PALETTE["panel_alt"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+        )
+        format_box.pack(fill="x", pady=(0, 16))
+        tk.Label(
+            format_box,
+            text="Essay export format",
+            bg=PALETTE["panel_alt"],
+            fg=PALETTE["text"],
+            font=self.label_font,
+        ).pack(anchor="w", padx=14, pady=(12, 8))
+        tk.Label(
+            format_box,
+            text="Adjust what gets attached to the final essay output. The specific export name is optional and can override the saved dashboard name for this essay only.",
+            bg=PALETTE["panel_alt"],
+            fg=PALETTE["muted"],
+            wraplength=500,
+            justify="left",
+            font=self.small_font,
+        ).pack(anchor="w", padx=14)
+
+        specific_name_wrap = tk.Frame(format_box, bg=PALETTE["panel_alt"])
+        specific_name_wrap.pack(fill="x", padx=14, pady=(12, 10))
+        tk.Label(
+            specific_name_wrap,
+            text="Specific export name (optional)",
+            bg=PALETTE["panel_alt"],
+            fg=PALETTE["text"],
+            font=self.label_font,
+        ).pack(anchor="w")
+        specific_name_shell = tk.Frame(specific_name_wrap, bg=PALETTE["border"])
+        specific_name_shell.pack(fill="x", pady=(8, 0))
+        tk.Entry(
+            specific_name_shell,
+            textvariable=self.essay_specific_name_var,
+            bg=PALETTE["input"],
+            fg=PALETTE["text"],
+            insertbackground=PALETTE["text"],
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            font=self.body_font,
+            selectbackground=PALETTE["accent_dark"],
+            selectforeground=PALETTE["text"],
+        ).pack(fill="x", padx=1, pady=1, ipady=10)
+        tk.Label(
+            specific_name_wrap,
+            text="Leave this blank if you want the essay export to use the saved dashboard name instead.",
+            bg=PALETTE["panel_alt"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+        ).pack(anchor="w", pady=(6, 0))
+
+        options_wrap = tk.Frame(format_box, bg=PALETTE["panel_alt"])
+        options_wrap.pack(fill="x", padx=14, pady=(0, 12))
+        for text, variable in [
+            ("Include saved or specific name in export", self.output_include_name_var),
+            ("Include date in export", self.output_include_date_var),
+            ("Include essay heading suggestion", self.essay_include_heading_var),
+            ("Include self-check tip", self.essay_include_tip_var),
+        ]:
+            tk.Checkbutton(
+                options_wrap,
+                text=text,
+                variable=variable,
+                bg=PALETTE["panel_alt"],
+                fg=PALETTE["text"],
+                activebackground=PALETTE["panel_alt"],
+                activeforeground=PALETTE["text"],
+                selectcolor=PALETTE["glass_inner"],
+                highlightthickness=0,
+                bd=0,
+                font=self.body_font,
+            ).pack(anchor="w", pady=(0, 8))
+
+        action_row = tk.Frame(build_body, bg=PALETTE["panel"])
+        action_row.pack(fill="x")
+        self.essay_generate_button = self._register_ai_button(
+            self._make_button(action_row, "Generate Essay", self.start_essay_generation, variant="primary")
+        )
+        self.essay_generate_button.pack(side="left", padx=(0, 10))
+        self._make_button(action_row, "Clear Essay Form", self.clear_essay_form, variant="ghost").pack(side="left")
+
+        result_card, result_body = self._create_card(
+            grid,
             "Essay Preview",
             "The draft appears here once generated. Export it to Word when you are happy with the result.",
+            PALETTE["info"],
         )
-        st.text_area("Essay output", value=st.session_state.essay_response, height=520, disabled=True, key="essay_response_view")
-        if st.button("Clear Result", key="essay_clear_result", use_container_width=True):
-            clear_essay_result()
-            st.rerun()
-        if st.session_state.essay_response.strip():
-            temp_saved = {
-                "output_include_name": st.session_state.output_include_name,
-                "output_include_date": st.session_state.output_include_date,
-                "essay_include_heading": st.session_state.essay_include_heading,
-                "essay_include_tip": st.session_state.essay_include_tip,
-            }
-            st.session_state.output_include_name = st.session_state.profile_output_include_name_input
-            st.session_state.output_include_date = st.session_state.profile_output_include_date_input
-            st.session_state.essay_include_heading = st.session_state.profile_essay_include_heading_input
-            st.session_state.essay_include_tip = st.session_state.profile_essay_include_tip_input
-            try:
-                render_download_button(
-                    st.session_state.essay_title.strip() or "Essay Draft",
-                    st.session_state.essay_response,
-                    sanitize_filename((st.session_state.essay_title.strip() or "essay_draft").lower().replace(" ", "_")),
-                    "essay",
-                    lambda: (clear_essay_form(), clear_essay_result()),
-                    name_override=st.session_state.essay_specific_name.strip(),
-                )
-            finally:
-                st.session_state.output_include_name = temp_saved["output_include_name"]
-                st.session_state.output_include_date = temp_saved["output_include_date"]
-                st.session_state.essay_include_heading = temp_saved["essay_include_heading"]
-                st.session_state.essay_include_tip = temp_saved["essay_include_tip"]
+        result_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        tk.Label(
+            result_body,
+            textvariable=self.essay_progress_var,
+            bg=PALETTE["panel_alt"],
+            fg=PALETTE["accent_soft"],
+            font=self.label_font,
+            padx=14,
+            pady=8,
+        ).pack(anchor="w", pady=(0, 12))
+        self.essay_result_text = self._labeled_text(
+            result_body,
+            "Essay output",
+            24,
+            "Generated essay draft appears here.",
+            read_only=True,
+        )
+        essay_actions = tk.Frame(result_body, bg=PALETTE["panel"])
+        essay_actions.pack(fill="x")
+        self.essay_export_button = self._make_button(essay_actions, "Export Result", self.export_essay_result, variant="secondary")
+        self.essay_export_button.pack(side="left", padx=(0, 10))
+        self.essay_export_button.config(state="disabled")
+        self._make_button(essay_actions, "Clear Result", self.clear_essay_result, variant="ghost").pack(side="left")
 
+        self.essay_layout = {
+            "grid": grid,
+            "build": build_card,
+            "result": result_card,
+        }
 
-def render_activity_page(ai_ready: bool) -> None:
-    render_page_intro("activity")
-    render_back_button("academics", "Back To Academics")
-    st.caption(folder_path_lines()["activity"])
+    def _build_activity_tool(self, parent: tk.Frame) -> None:
+        scroll_shell, scroll_body, _activity_canvas = self._create_scrollable_section(parent)
+        scroll_shell.pack(fill="both", expand=True)
 
-    left, right = st.columns(2)
-    with left:
-        render_card_header(
+        build_card, build_body = self._create_card(
+            scroll_body,
             "Activity Builder",
             "Set the topic, activity type, and optional level details, then generate a ready-to-use school activity.",
+            PALETTE["success"],
         )
-        st.text_input("Activity topic or title", key="activity_title")
-        st.text_input("Activity type", key="activity_type")
-        st.text_input("Level or class (optional)", key="activity_level")
-        st.text_area("Specific instructions", key="activity_prompt", height=180)
-        action_a, action_b = st.columns(2)
-        if action_a.button("Generate Activity", key="activity_generate", use_container_width=True, type="primary", disabled=not ai_ready):
-            title = st.session_state.activity_title.strip()
-            activity_type = st.session_state.activity_type.strip() or "Activity"
-            level = st.session_state.activity_level.strip()
-            request = st.session_state.activity_prompt.strip()
-            if not title:
-                st.warning("Enter the activity topic or title before generating.")
-            else:
-                prompt = (
-                    "Create a structured educational activity for offline study use.\n"
-                    f"Saved dashboard profile:\n{identity_block() or 'No saved profile'}\n\n"
-                    f"Activity title or topic: {title}\n"
-                    f"Activity type: {activity_type}\n"
-                    f"Level or class: {level or 'Not specified'}\n"
-                    f"Specific request: {request or 'No extra request provided'}\n\n"
-                    "Return these plain-text sections in this exact order:\n"
-                    "Activity Title:\n"
-                    "Objective:\n"
-                    "Instructions:\n"
-                    "Activity Proper:\n"
-                    "Answer Guide:\n\n"
-                    "Do not use markdown symbols like ### or ####."
-                )
-                result = run_generation(prompt, "activity draft")
-                if result:
-                    st.session_state.activity_response = result
-                    st.success("Activity ready.")
-        if action_b.button("Clear Activity Form", key="activity_clear_form", use_container_width=True):
-            clear_activity_form()
-            clear_activity_result()
-            st.rerun()
+        build_card.pack(fill="x", pady=(0, 14))
+        self._labeled_entry(
+            build_body,
+            "Activity topic or title",
+            self.activity_title_var,
+            "Example: Climate change awareness, reading comprehension, or crypto basics.",
+        )
+        self._labeled_entry(
+            build_body,
+            "Activity type",
+            self.activity_type_var,
+            "Examples: Worksheet, reflection, pair work, quiz drill, seatwork.",
+        )
+        self._labeled_entry(
+            build_body,
+            "Level or class (optional)",
+            self.activity_level_var,
+            "Example: Grade 10, senior high, college, or section name.",
+        )
+        self.activity_prompt_text = self._labeled_text(
+            build_body,
+            "Specific instructions",
+            8,
+            "Add goals, constraints, style, or topics that must appear in the generated activity.",
+        )
+        activity_actions = tk.Frame(build_body, bg=PALETTE["panel"])
+        activity_actions.pack(fill="x")
+        self.activity_generate_button = self._register_ai_button(
+            self._make_button(activity_actions, "Generate Activity", self.start_activity_generation, variant="primary")
+        )
+        self.activity_generate_button.pack(side="left", padx=(0, 10))
+        self._make_button(activity_actions, "Clear Activity Form", self.clear_activity_form, variant="ghost").pack(side="left")
 
-    with right:
-        render_card_header(
+        result_card, result_body = self._create_card(
+            scroll_body,
             "Activity Preview",
             "The generated activity appears here in a clean structure you can export straight to Word.",
+            PALETTE["info"],
         )
-        st.text_area("Generated activity", value=st.session_state.activity_response, height=520, disabled=True, key="activity_response_view")
-        if st.button("Clear Result", key="activity_clear_result", use_container_width=True):
-            clear_activity_result()
-            st.rerun()
-        if st.session_state.activity_response.strip():
-            render_download_button(
-                st.session_state.activity_title.strip() or "Activity Draft",
-                st.session_state.activity_response,
-                sanitize_filename((st.session_state.activity_title.strip() or "activity_draft").lower().replace(" ", "_")),
-                "activity",
-                lambda: (clear_activity_form(), clear_activity_result()),
-            )
+        result_card.pack(fill="both", expand=True)
+        tk.Label(
+            result_body,
+            textvariable=self.activity_progress_var,
+            bg=PALETTE["panel_alt"],
+            fg=PALETTE["accent_soft"],
+            font=self.label_font,
+            padx=14,
+            pady=8,
+        ).pack(anchor="w", pady=(0, 12))
+        self.activity_result_text = self._labeled_text(
+            result_body,
+            "Generated activity",
+            18,
+            "Your activity draft appears here.",
+            read_only=True,
+        )
+        result_actions = tk.Frame(result_body, bg=PALETTE["panel"])
+        result_actions.pack(fill="x")
+        self.activity_export_button = self._make_button(result_actions, "Export Result", self.export_activity_result, variant="secondary")
+        self.activity_export_button.pack(side="left", padx=(0, 10))
+        self.activity_export_button.config(state="disabled")
+        self._make_button(result_actions, "Clear Result", self.clear_activity_result, variant="ghost").pack(side="left")
 
+    def _build_document_tool(self, parent: tk.Frame) -> None:
+        scroll_shell, scroll_body, _document_canvas = self._create_scrollable_section(parent)
+        scroll_shell.pack(fill="both", expand=True)
 
-def render_document_page(ai_ready: bool) -> None:
-    render_page_intro("document")
-    render_back_button("academics", "Back To Academics")
-    st.caption(folder_path_lines()["document"])
-
-    left, right = st.columns(2)
-    with left:
-        render_card_header(
+        build_card, build_body = self._create_card(
+            scroll_body,
             "Document Builder",
             "Generate a structured school document such as a handout, report, reviewer, or formal academic write-up.",
+            PALETTE["accent"],
         )
-        st.text_input("Document title", key="document_title")
-        st.text_input("Document type", key="document_type")
-        st.text_input("Audience or purpose (optional)", key="document_audience")
-        st.text_area("Specific content request", key="document_prompt", height=180)
-        action_a, action_b = st.columns(2)
-        if action_a.button("Generate Document", key="document_generate", use_container_width=True, type="primary", disabled=not ai_ready):
-            title = st.session_state.document_title.strip()
-            doc_type = st.session_state.document_type.strip() or "Study Handout"
-            audience = st.session_state.document_audience.strip()
-            request = st.session_state.document_prompt.strip()
-            if not title:
-                st.warning("Enter the document title before generating.")
-            elif not request:
-                st.warning("Describe what the document should contain before generating.")
-            else:
-                prompt = (
-                    "Create a structured educational document.\n"
-                    f"Saved dashboard profile:\n{identity_block() or 'No saved profile'}\n\n"
-                    f"Document title: {title}\n"
-                    f"Document type: {doc_type}\n"
-                    f"Audience or purpose: {audience or 'Not specified'}\n"
-                    f"Content request: {request}\n\n"
-                    "Return these plain-text sections in this exact order:\n"
-                    "Document Type:\n"
-                    "Purpose:\n"
-                    "Main Content:\n\n"
-                    "Do not use markdown symbols like ### or ####."
-                )
-                result = run_generation(prompt, "document draft")
-                if result:
-                    st.session_state.document_response = result
-                    st.success("Document ready.")
-        if action_b.button("Clear Document Form", key="document_clear_form", use_container_width=True):
-            clear_document_form()
-            clear_document_result()
-            st.rerun()
+        build_card.pack(fill="x", pady=(0, 14))
+        self._labeled_entry(
+            build_body,
+            "Document title",
+            self.document_title_var,
+            "This becomes the export title by default.",
+        )
+        self._labeled_entry(
+            build_body,
+            "Document type",
+            self.document_type_var,
+            "Examples: Study handout, report, reviewer, request letter, lesson guide.",
+        )
+        self._labeled_entry(
+            build_body,
+            "Audience or purpose (optional)",
+            self.document_audience_var,
+            "Example: teacher, classmates, groupmates, beginners, or school office.",
+        )
+        self.document_prompt_text = self._labeled_text(
+            build_body,
+            "Specific content request",
+            8,
+            "Add the main ideas, sections, tone, or requirements that the document should include.",
+        )
+        document_actions = tk.Frame(build_body, bg=PALETTE["panel"])
+        document_actions.pack(fill="x")
+        self.document_generate_button = self._register_ai_button(
+            self._make_button(document_actions, "Generate Document", self.start_document_generation, variant="primary")
+        )
+        self.document_generate_button.pack(side="left", padx=(0, 10))
+        self._make_button(document_actions, "Clear Document Form", self.clear_document_form, variant="ghost").pack(side="left")
 
-    with right:
-        render_card_header(
+        result_card, result_body = self._create_card(
+            scroll_body,
             "Document Preview",
             "The generated document draft appears here and can be exported directly to the document subfolder.",
+            PALETTE["info"],
         )
-        st.text_area("Generated document", value=st.session_state.document_response, height=520, disabled=True, key="document_response_view")
-        if st.button("Clear Result", key="document_clear_result", use_container_width=True):
-            clear_document_result()
-            st.rerun()
-        if st.session_state.document_response.strip():
-            render_download_button(
-                st.session_state.document_title.strip() or "Document Draft",
-                st.session_state.document_response,
-                sanitize_filename((st.session_state.document_title.strip() or "document_draft").lower().replace(" ", "_")),
-                "document",
-                lambda: (clear_document_form(), clear_document_result()),
-            )
+        result_card.pack(fill="both", expand=True)
+        tk.Label(
+            result_body,
+            textvariable=self.document_progress_var,
+            bg=PALETTE["panel_alt"],
+            fg=PALETTE["accent_soft"],
+            font=self.label_font,
+            padx=14,
+            pady=8,
+        ).pack(anchor="w", pady=(0, 12))
+        self.document_result_text = self._labeled_text(
+            result_body,
+            "Generated document",
+            18,
+            "Your structured document appears here.",
+            read_only=True,
+        )
+        result_actions = tk.Frame(result_body, bg=PALETTE["panel"])
+        result_actions.pack(fill="x")
+        self.document_export_button = self._make_button(result_actions, "Export Result", self.export_document_result, variant="secondary")
+        self.document_export_button.pack(side="left", padx=(0, 10))
+        self.document_export_button.config(state="disabled")
+        self._make_button(result_actions, "Clear Result", self.clear_document_result, variant="ghost").pack(side="left")
 
+    def _build_assignment_tool(self, parent: tk.Frame) -> None:
+        scroll_shell, scroll_body, _assignment_canvas = self._create_scrollable_section(parent)
+        scroll_shell.pack(fill="both", expand=True)
 
-def render_codefix_page(ai_ready: bool) -> None:
-    render_page_intro("codefix")
-    render_back_button("developer", "Back To Developer")
-    st.caption(folder_path_lines()["codefix"])
+        intake_card, intake_body = self._create_card(
+            scroll_body,
+            "Assignment Intake",
+            "Upload a document or paste the assignment manually, then let the app analyze the task before generating a guided response.",
+            PALETTE["warning"],
+        )
+        intake_card.pack(fill="x", pady=(0, 14))
+        file_row = tk.Frame(intake_body, bg=PALETTE["panel"])
+        file_row.pack(fill="x", pady=(0, 14))
+        self._make_button(file_row, "Upload Assignment File", self.load_assignment_file, variant="primary").pack(
+            side="left", padx=(0, 10)
+        )
+        self._make_button(file_row, "Clear Assignment Input", self.clear_assignment_workspace, variant="ghost").pack(
+            side="left"
+        )
+        tk.Label(
+            intake_body,
+            textvariable=self.assignment_file_var,
+            bg=PALETTE["panel"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+            justify="left",
+            wraplength=760,
+        ).pack(anchor="w", pady=(0, 10))
+        self._metric_tile(intake_body, "Assignment stats", self.assignment_stats_var, PALETTE["accent_soft"]).pack(
+            fill="x", pady=(0, 14)
+        )
+        self.assignment_source_text = self._labeled_text(
+            intake_body,
+            "Assignment content",
+            15,
+            "Paste the assignment instructions here if you are not uploading a file.",
+        )
+        self.assignment_source_text.bind("<KeyRelease>", lambda _event: self.refresh_assignment_stats())
+        mode_row = tk.Frame(intake_body, bg=PALETTE["panel"])
+        mode_row.pack(fill="x", pady=(0, 12))
+        self._styled_radiobutton(mode_row, "Guided response", self.assignment_mode_var, "guided").pack(side="left", padx=(0, 16))
+        self._styled_radiobutton(mode_row, "Full draft", self.assignment_mode_var, "complete").pack(side="left")
+        self.assignment_prompt_text = self._labeled_text(
+            intake_body,
+            "Specific prompt (optional)",
+            5,
+            "Examples: answer only parts 1 to 3, make it formal, or explain step by step.",
+        )
+        action_row = tk.Frame(intake_body, bg=PALETTE["panel"])
+        action_row.pack(fill="x")
+        self.assignment_analyze_button = self._register_ai_button(
+            self._make_button(action_row, "Analyze Assignment", self.start_assignment_analysis, variant="secondary")
+        )
+        self.assignment_analyze_button.pack(side="left", padx=(0, 10))
+        self.assignment_generate_button = self._register_ai_button(
+            self._make_button(action_row, "Generate Assignment Guidance", self.start_assignment_response, variant="primary")
+        )
+        self.assignment_generate_button.pack(side="left")
 
-    left, right = st.columns(2)
-    with left:
-        render_card_header(
+        result_card, result_body = self._create_card(
+            scroll_body,
+            "Assignment Response",
+            "The assignment summary appears first, followed by the generated guided response or sample draft.",
+            PALETTE["info"],
+        )
+        result_card.pack(fill="both", expand=True)
+        tk.Label(
+            result_body,
+            textvariable=self.assignment_progress_var,
+            bg=PALETTE["panel_alt"],
+            fg=PALETTE["accent_soft"],
+            font=self.label_font,
+            padx=14,
+            pady=8,
+        ).pack(anchor="w", pady=(0, 12))
+        self.assignment_summary_text = self._labeled_text(
+            result_body,
+            "Assignment summary",
+            8,
+            "The app reads the assignment first before generating the response.",
+            read_only=True,
+        )
+        self.assignment_result_text = self._labeled_text(
+            result_body,
+            "Generated response",
+            12,
+            "The generated assignment support appears here.",
+            read_only=True,
+        )
+        result_actions = tk.Frame(result_body, bg=PALETTE["panel"])
+        result_actions.pack(fill="x")
+        self.assignment_export_button = self._make_button(
+            result_actions, "Export Result", self.export_assignment_result, variant="secondary"
+        )
+        self.assignment_export_button.pack(side="left", padx=(0, 10))
+        self.assignment_export_button.config(state="disabled")
+        self._make_button(result_actions, "Clear Result", self.clear_assignment_result, variant="ghost").pack(side="left")
+
+    def _build_codefix_tool(self, parent: tk.Frame) -> None:
+        scroll_shell, scroll_body, _codefix_canvas = self._create_scrollable_section(parent)
+        scroll_shell.pack(fill="both", expand=True)
+
+        build_card, build_body = self._create_card(
+            scroll_body,
             "Code Fix Builder",
             "Paste the broken code, add the error or symptom, and explain the expected behavior so the app can generate a cleaner fix.",
+            PALETTE["warning"],
         )
-        st.text_input("Issue title (optional)", key="codefix_title")
-        st.text_input("Language or stack", key="codefix_language")
-        st.text_area("Error message or symptoms", key="codefix_error", height=140)
-        st.text_area("Code snippet", key="codefix_source", height=240)
-        st.text_area("Expected behavior (optional)", key="codefix_expectation", height=110)
-        action_a, action_b = st.columns(2)
-        if action_a.button("Generate Code Fix", key="codefix_generate", use_container_width=True, type="primary", disabled=not ai_ready):
-            title = st.session_state.codefix_title.strip()
-            language = st.session_state.codefix_language.strip() or "Code"
-            error_text = st.session_state.codefix_error.strip()
-            source = st.session_state.codefix_source.strip()
-            expectation = st.session_state.codefix_expectation.strip()
-            if not source:
-                st.warning("Paste the code snippet before generating a fix.")
-            elif not error_text:
-                st.warning("Add the error message or symptoms before generating a fix.")
-            else:
-                prompt = (
-                    "Fix the following code issue for study and debugging support.\n\n"
-                    f"Language or stack: {language}\n"
-                    f"Issue title: {title or 'No title provided'}\n"
-                    f"Error message or symptoms:\n{error_text}\n\n"
-                    f"Code snippet:\n{source}\n\n"
-                    f"Expected behavior:\n{expectation or 'Not provided'}\n\n"
-                    "Return these plain-text sections in this exact order:\n"
-                    "Issue Summary:\n"
-                    "Root Cause:\n"
-                    "Fixed Version:\n"
-                    "Why It Works:\n"
-                    "Next Checks:\n\n"
-                    "Do not use markdown symbols like ### or ####."
-                )
-                result = run_generation(prompt, "code fix")
-                if result:
-                    st.session_state.codefix_response = result
-                    st.success("Code fix ready.")
-        if action_b.button("Clear Code Fixer", key="codefix_clear_form", use_container_width=True):
-            clear_codefix_form()
-            clear_codefix_result()
-            st.rerun()
+        build_card.pack(fill="x", pady=(0, 14))
+        self._labeled_entry(
+            build_body,
+            "Issue title (optional)",
+            self.codefix_title_var,
+            "Example: Login bug, syntax error, API request failure, or Tkinter freeze.",
+        )
+        self._labeled_entry(
+            build_body,
+            "Language or stack",
+            self.codefix_language_var,
+            "Examples: Python, JavaScript, Tkinter, React, Node, Flask.",
+        )
+        self.codefix_error_text = self._labeled_text(
+            build_body,
+            "Error message or symptoms",
+            6,
+            "Paste the exact error message or explain what is going wrong.",
+        )
+        self.codefix_source_text = self._labeled_text(
+            build_body,
+            "Code snippet",
+            12,
+            "Paste only the relevant code block if possible so the response stays focused.",
+        )
+        self.codefix_expectation_text = self._labeled_text(
+            build_body,
+            "Expected behavior (optional)",
+            4,
+            "Describe what the code should do once fixed.",
+        )
+        action_row = tk.Frame(build_body, bg=PALETTE["panel"])
+        action_row.pack(fill="x")
+        self.codefix_generate_button = self._register_ai_button(
+            self._make_button(action_row, "Generate Code Fix", self.start_codefix_generation, variant="primary")
+        )
+        self.codefix_generate_button.pack(side="left", padx=(0, 10))
+        self._make_button(action_row, "Clear Code Fixer", self.clear_codefix_form, variant="ghost").pack(side="left")
 
-    with right:
-        render_card_header(
+        result_card, result_body = self._create_card(
+            scroll_body,
             "Code Fix Preview",
             "The cleaned-up fix and explanation appear here. Export it if you want to save the debugging notes to Word.",
+            PALETTE["info"],
         )
-        st.text_area("Fixed result", value=st.session_state.codefix_response, height=520, disabled=True, key="codefix_response_view")
-        if st.button("Clear Result", key="codefix_clear_result", use_container_width=True):
-            clear_codefix_result()
-            st.rerun()
-        if st.session_state.codefix_response.strip():
-            export_title = st.session_state.codefix_title.strip() or f"{st.session_state.codefix_language.strip() or 'Code'} Code Fix"
-            render_download_button(
-                export_title,
-                st.session_state.codefix_response,
-                sanitize_filename(export_title.lower().replace(" ", "_")),
-                "codefix",
-                lambda: (clear_codefix_form(), clear_codefix_result()),
+        result_card.pack(fill="both", expand=True)
+        tk.Label(
+            result_body,
+            textvariable=self.codefix_progress_var,
+            bg=PALETTE["panel_alt"],
+            fg=PALETTE["accent_soft"],
+            font=self.label_font,
+            padx=14,
+            pady=8,
+        ).pack(anchor="w", pady=(0, 12))
+        self.codefix_result_text = self._labeled_text(
+            result_body,
+            "Fixed result",
+            18,
+            "The code fix output appears here.",
+            read_only=True,
+        )
+        result_actions = tk.Frame(result_body, bg=PALETTE["panel"])
+        result_actions.pack(fill="x")
+        self.codefix_export_button = self._make_button(result_actions, "Export Result", self.export_codefix_result, variant="secondary")
+        self.codefix_export_button.pack(side="left", padx=(0, 10))
+        self.codefix_export_button.config(state="disabled")
+        self._make_button(result_actions, "Clear Result", self.clear_codefix_result, variant="ghost").pack(side="left")
+
+    def _refresh_identity_labels(self) -> None:
+        display_name = self.saved_name or "Guest"
+        self.header_title_var.set(f"{display_name}'s Premium Study Desk")
+        self.header_subtitle_var.set(
+            "A cleaner dashboard for identity settings, grouped academic workspaces, and a separate developer hub for code-fixing support."
+        )
+        if self.saved_name:
+            self.profile_summary_var.set(self.saved_name)
+        else:
+            self.profile_summary_var.set("No saved name yet")
+
+        if self.saved_include_date:
+            self.profile_date_var.set(f"Date today enabled: {today_string()}")
+        else:
+            self.profile_date_var.set("Date today disabled")
+
+        if self.saved_name and self.saved_include_date:
+            self.profile_note_var.set("Name and today's date are ready to be attached to exported work.")
+        elif self.saved_name:
+            self.profile_note_var.set("Only the saved name will be remembered for this workspace.")
+        else:
+            self.profile_note_var.set("Save a profile if you want a personalized dashboard header.")
+
+    def _persist_profile_settings(self) -> None:
+        save_profile_settings(
+            self.saved_name,
+            self.saved_include_date,
+            str(self.base_export_dir),
+            self.output_include_name_var.get(),
+            self.output_include_date_var.get(),
+            self.essay_include_heading_var.get(),
+            self.essay_include_tip_var.get(),
+        )
+
+    def _current_output_settings(self) -> dict[str, bool]:
+        return {
+            "include_name": self.output_include_name_var.get(),
+            "include_date": self.output_include_date_var.get(),
+            "essay_include_heading": self.essay_include_heading_var.get(),
+            "essay_include_tip": self.essay_include_tip_var.get(),
+        }
+
+    def _refresh_export_folder_labels(self) -> None:
+        self.export_var.set(str(self.base_export_dir))
+        self.main_folder_var.set(str(self.base_export_dir))
+        self.quiz_folder_var.set(str(self.quiz_export_dir))
+        self.essay_folder_var.set(str(self.essay_export_dir))
+        self.activity_folder_var.set(str(self.activity_export_dir))
+        self.document_folder_var.set(str(self.document_export_dir))
+        self.assignment_folder_var.set(str(self.assignment_export_dir))
+        self.codefix_folder_var.set(str(self.codefix_export_dir))
+        self.academics_folders_var.set(
+            "Quiz Solver\n"
+            "Assignment Solver\n"
+            "Essay Generator\n"
+            "Activity Generator\n"
+            "Document Generator"
+        )
+        self.developer_folder_var.set(f"Code Error Fixer\n{self.codefix_export_dir}")
+        self.folder_note_var.set("Each tool now autosaves into its own dedicated subfolder inside the chosen main folder.")
+
+    def _ensure_export_directories(self) -> None:
+        self.base_export_dir.mkdir(parents=True, exist_ok=True)
+        self.export_dirs = {
+            "quiz": self.base_export_dir / "quiz_solver",
+            "essay": self.base_export_dir / "essay_generator",
+            "activity": self.base_export_dir / "activity_generator",
+            "document": self.base_export_dir / "document_generator",
+            "assignment": self.base_export_dir / "assignment_solver",
+            "codefix": self.base_export_dir / "code_error_fixer",
+        }
+        self.quiz_export_dir = self.export_dirs["quiz"]
+        self.essay_export_dir = self.export_dirs["essay"]
+        self.activity_export_dir = self.export_dirs["activity"]
+        self.document_export_dir = self.export_dirs["document"]
+        self.assignment_export_dir = self.export_dirs["assignment"]
+        self.codefix_export_dir = self.export_dirs["codefix"]
+        for folder in self.export_dirs.values():
+            folder.mkdir(parents=True, exist_ok=True)
+        self._refresh_export_folder_labels()
+
+    def choose_main_folder(self) -> None:
+        selected = filedialog.askdirectory(title="Choose Main Save Folder", initialdir=str(self.base_export_dir))
+        if not selected:
+            return
+        self.base_export_dir = Path(selected)
+        self._ensure_export_directories()
+        self._persist_profile_settings()
+        self.status_var.set("Main save folder updated.")
+        messagebox.showinfo(
+            "Folder Ready",
+            "Main folder updated and the dedicated tool subfolders are ready.\n\n"
+            f"Main: {self.base_export_dir}\n"
+            f"Quiz Solver: {self.quiz_export_dir}\n"
+            f"Assignment Solver: {self.assignment_export_dir}\n"
+            f"Essay Generator: {self.essay_export_dir}\n"
+            f"Activity Generator: {self.activity_export_dir}\n"
+            f"Document Generator: {self.document_export_dir}\n"
+            f"Code Error Fixer: {self.codefix_export_dir}",
+        )
+
+    def open_main_folder(self) -> None:
+        self._ensure_export_directories()
+        try:
+            os.startfile(self.base_export_dir)
+        except AttributeError:
+            self._notify("Open Folder", f"Main folder path:\n{self.base_export_dir}")
+        except OSError as exc:
+            self._notify("Open Folder Error", str(exc), level="error")
+
+    def save_profile(self) -> None:
+        name = self.name_input_var.get().strip()
+        include_date = self.include_date_var.get()
+        self.saved_name = name
+        self.saved_include_date = include_date
+        self._ensure_export_directories()
+        self._persist_profile_settings()
+        self._refresh_identity_labels()
+        self.status_var.set("Dashboard profile saved.")
+        messagebox.showinfo("Profile Saved", "Your dashboard profile, output options, and save-folder setup have been saved.")
+
+    def clear_profile(self) -> None:
+        self.name_input_var.set("")
+        self.include_date_var.set(False)
+        self.output_include_name_var.set(False)
+        self.output_include_date_var.set(False)
+        self.essay_include_heading_var.set(True)
+        self.essay_include_tip_var.set(True)
+        self.base_export_dir = EXPORT_DIR
+        self.saved_name = ""
+        self.saved_include_date = False
+        self._ensure_export_directories()
+        self._persist_profile_settings()
+        self._refresh_identity_labels()
+        self.status_var.set("Saved profile cleared and folder reset to default exports.")
+
+    def show_page(self, key: str) -> None:
+        self.pages[key].lift()
+        academic_pages = {"academics", "quiz", "essay", "activity", "document", "assignment"}
+        developer_pages = {"developer", "codefix"}
+        if key in academic_pages:
+            active_nav = "academics"
+        elif key in developer_pages:
+            active_nav = "developer"
+        else:
+            active_nav = key
+        for name, button in self.nav_buttons.items():
+            if name == active_nav:
+                self._apply_button_palette(
+                    button,
+                    PALETTE["panel_alt"],
+                    PALETTE["accent_soft"],
+                    PALETTE["glass_hover"],
+                    PALETTE["accent_soft"],
+                    PALETTE["accent_dark"],
+                    PALETTE["accent"],
+                )
+            else:
+                self._apply_button_palette(
+                    button,
+                    PALETTE["sidebar"],
+                    PALETTE["text"],
+                    PALETTE["panel_alt"],
+                    PALETTE["accent_soft"],
+                    PALETTE["sidebar"],
+                    PALETTE["accent_dark"],
+                )
+        self.status_var.set(f"Viewing {key.title()}.")
+        self._schedule_responsive_refresh()
+
+    def open_academics(self, tool: str) -> None:
+        self.show_academic_tool(tool)
+
+    def show_academic_tool(self, tool: str) -> None:
+        self.academic_tool_var.set(tool)
+        if tool in {"quiz", "essay", "activity", "document", "assignment"}:
+            self.show_page(tool)
+        else:
+            self.show_page("academics")
+        self.status_var.set(f"Academics tool ready: {tool.replace('_', ' ').title()}.")
+        self._schedule_responsive_refresh()
+
+    def refresh_ai_status(self) -> None:
+        load_dotenv(ENV_PATH)
+        model = os.getenv("HF_MODEL", "").strip()
+        token = os.getenv("HF_TOKEN", "").strip()
+
+        if InferenceClient is None:
+            self.ai_ready = False
+            self.ai_chip_var.set("AI offline: missing dependency")
+            self.model_var.set("Install requirements.txt to enable AI")
+            self.ai_chip.configure(bg=PALETTE["danger"], fg=PALETTE["bg"])
+        elif token and model:
+            self.ai_ready = True
+            self.ai_chip_var.set("AI ready for academics")
+            self.model_var.set(model)
+            self.ai_chip.configure(bg=PALETTE["success"], fg=PALETTE["bg"])
+        else:
+            self.ai_ready = False
+            self.ai_chip_var.set("AI waiting for .env setup")
+            self.model_var.set("Add HF_TOKEN and HF_MODEL to .env")
+            self.ai_chip.configure(bg=PALETTE["warning"], fg=PALETTE["bg"])
+
+        state = "normal" if self.ai_ready and not self.busy else "disabled"
+        for button in self.ai_action_buttons:
+            button.configure(state=state)
+        self.status_var.set("AI settings refreshed.")
+
+    def _set_ai_buttons_state(self, enabled: bool) -> None:
+        state = "normal" if enabled and self.ai_ready else "disabled"
+        for button in self.ai_action_buttons:
+            button.configure(state=state)
+
+    def _get_text(self, widget: ScrolledText) -> str:
+        return widget.get("1.0", "end-1c")
+
+    def _set_text(self, widget: ScrolledText, value: str, read_only: bool = False) -> None:
+        widget.config(state="normal")
+        widget.delete("1.0", "end")
+        if value:
+            widget.insert("1.0", value)
+        if read_only:
+            widget.config(state="disabled")
+
+    def _notify(self, title: str, message: str, level: str = "info") -> None:
+        self.status_var.set(message)
+        if level == "error":
+            messagebox.showerror(title, message)
+        elif level == "warning":
+            messagebox.showwarning(title, message)
+        else:
+            messagebox.showinfo(title, message)
+
+    def _identity_block(self) -> str:
+        lines: list[str] = []
+        if self.saved_name:
+            lines.append(f"Name: {self.saved_name}")
+        if self.saved_include_date:
+            lines.append(f"Date: {today_string()}")
+        return "\n".join(lines)
+
+    def _export_metadata_lines(self, category: str = "generic", name_override: str | None = None) -> list[str]:
+        lines: list[str] = []
+        selected_name = self.saved_name
+        if category == "essay" and name_override and name_override.strip():
+            selected_name = name_override.strip()
+        if self.output_include_name_var.get() and selected_name:
+            lines.append(selected_name)
+        if self.output_include_date_var.get():
+            lines.append(today_string())
+        return lines
+
+    def _auto_output_path(self, folder: Path, default_name: str) -> Path:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stem = sanitize_filename(default_name)
+        candidate = folder / f"{stem}_{stamp}.docx"
+        counter = 1
+        while candidate.exists():
+            candidate = folder / f"{stem}_{stamp}_{counter}.docx"
+            counter += 1
+        return candidate
+
+    def _export_text_output(
+        self,
+        title: str,
+        body: str,
+        default_name: str,
+        category: str,
+        name_override: str | None = None,
+    ) -> Path | None:
+        final_body = body.strip()
+
+        self._ensure_export_directories()
+        target_dir = self.export_dirs.get(category, self.base_export_dir)
+        output_path = self._auto_output_path(target_dir, default_name)
+        save_docx(
+            title,
+            final_body,
+            output_path,
+            category=category,
+            metadata_lines=self._export_metadata_lines(category=category, name_override=name_override),
+            output_options=self._current_output_settings(),
+        )
+        self.status_var.set(f"Saved {output_path.name} to {target_dir.name}.")
+        messagebox.showinfo("Saved", f"Document saved automatically to:\n{output_path}")
+        return output_path
+
+    def load_quiz_file(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Choose Quiz File",
+            filetypes=[
+                ("Supported Files", "*.docx *.pdf *.txt *.md"),
+                ("Word Document", "*.docx"),
+                ("PDF File", "*.pdf"),
+                ("Text File", "*.txt"),
+                ("Markdown", "*.md"),
+            ],
+        )
+        if not selected:
+            return
+
+        path = Path(selected)
+        try:
+            text = read_document_text(path)
+        except Exception as exc:
+            self._notify("File Read Error", str(exc), level="error")
+            return
+
+        self.quiz_loaded_path = path
+        self.quiz_file_var.set(str(path))
+        self._set_text(self.quiz_source_text, text)
+        self.refresh_quiz_stats()
+        self.clear_quiz_result()
+        self._set_text(self.quiz_summary_text, "", read_only=True)
+        self.quiz_summary_cache = ""
+        self.quiz_progress_var.set("File loaded. Analyze it when ready.")
+        self.status_var.set(f"Loaded {path.name} into the quiz workspace.")
+
+    def refresh_quiz_stats(self) -> None:
+        text = self._get_text(self.quiz_source_text)
+        self.quiz_stats_var.set(f"{count_words(text)} words   |   {len(text.strip())} characters")
+
+    def load_assignment_file(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Choose Assignment File",
+            filetypes=[
+                ("Supported Files", "*.docx *.pdf *.txt *.md"),
+                ("Word Document", "*.docx"),
+                ("PDF File", "*.pdf"),
+                ("Text File", "*.txt"),
+                ("Markdown", "*.md"),
+            ],
+        )
+        if not selected:
+            return
+
+        path = Path(selected)
+        try:
+            text = read_document_text(path)
+        except Exception as exc:
+            self._notify("File Read Error", str(exc), level="error")
+            return
+
+        self.assignment_loaded_path = path
+        self.assignment_file_var.set(str(path))
+        self._set_text(self.assignment_source_text, text)
+        self.refresh_assignment_stats()
+        self.clear_assignment_result()
+        self._set_text(self.assignment_summary_text, "", read_only=True)
+        self.assignment_summary_cache = ""
+        self.assignment_progress_var.set("Assignment file loaded. Analyze it when ready.")
+        self.status_var.set(f"Loaded {path.name} into the assignment workspace.")
+
+    def refresh_assignment_stats(self) -> None:
+        text = self._get_text(self.assignment_source_text)
+        self.assignment_stats_var.set(f"{count_words(text)} words   |   {len(text.strip())} characters")
+
+    def clear_quiz_workspace(self) -> None:
+        self.quiz_loaded_path = None
+        self.quiz_file_var.set("No file loaded yet")
+        self._set_text(self.quiz_source_text, "")
+        self._set_text(self.quiz_summary_text, "", read_only=True)
+        self._set_text(self.quiz_prompt_text, "")
+        self.clear_quiz_result()
+        self.quiz_summary_cache = ""
+        self.quiz_progress_var.set("Upload a file or paste text, then analyze it.")
+        self.refresh_quiz_stats()
+        self.status_var.set("Quiz workspace cleared.")
+
+    def clear_quiz_result(self) -> None:
+        self.quiz_response_cache = ""
+        self.quiz_export_title = "Quiz Support"
+        self.quiz_export_name = "quiz_support"
+        self._set_text(self.quiz_result_text, "", read_only=True)
+        self.quiz_export_button.configure(state="disabled")
+        if not self.quiz_summary_cache:
+            self.quiz_progress_var.set("Upload a file or paste text, then analyze it.")
+
+    def clear_essay_form(self) -> None:
+        self.essay_title_var.set("")
+        self.essay_specific_name_var.set("")
+        self.essay_word_count_var.set("500")
+        self.essay_tagalog_var.set(False)
+        self.essay_english_var.set(True)
+        self._set_text(self.essay_prompt_text, "")
+        self.status_var.set("Essay form cleared.")
+
+    def clear_essay_result(self) -> None:
+        self.essay_response_cache = ""
+        self.essay_export_title = "Essay Draft"
+        self.essay_export_name = "essay_draft"
+        self._set_text(self.essay_result_text, "", read_only=True)
+        self.essay_export_button.configure(state="disabled")
+        self.essay_progress_var.set("Set the essay details, then generate.")
+
+    def clear_activity_form(self) -> None:
+        self.activity_title_var.set("")
+        self.activity_type_var.set("Worksheet")
+        self.activity_level_var.set("")
+        self._set_text(self.activity_prompt_text, "")
+        self.status_var.set("Activity form cleared.")
+
+    def clear_activity_result(self) -> None:
+        self.activity_response_cache = ""
+        self.activity_export_title = "Activity Draft"
+        self.activity_export_name = "activity_draft"
+        self._set_text(self.activity_result_text, "", read_only=True)
+        self.activity_export_button.configure(state="disabled")
+        self.activity_progress_var.set("Set the activity details, then generate.")
+
+    def clear_document_form(self) -> None:
+        self.document_title_var.set("")
+        self.document_type_var.set("Study Handout")
+        self.document_audience_var.set("")
+        self._set_text(self.document_prompt_text, "")
+        self.status_var.set("Document form cleared.")
+
+    def clear_document_result(self) -> None:
+        self.document_response_cache = ""
+        self.document_export_title = "Document Draft"
+        self.document_export_name = "document_draft"
+        self._set_text(self.document_result_text, "", read_only=True)
+        self.document_export_button.configure(state="disabled")
+        self.document_progress_var.set("Set the document request, then generate.")
+
+    def clear_assignment_workspace(self) -> None:
+        self.assignment_loaded_path = None
+        self.assignment_file_var.set("No assignment file loaded yet")
+        self._set_text(self.assignment_source_text, "")
+        self._set_text(self.assignment_summary_text, "", read_only=True)
+        self._set_text(self.assignment_prompt_text, "")
+        self.clear_assignment_result()
+        self.assignment_summary_cache = ""
+        self.assignment_progress_var.set("Upload or paste the assignment, then analyze it.")
+        self.refresh_assignment_stats()
+        self.status_var.set("Assignment workspace cleared.")
+
+    def clear_assignment_result(self) -> None:
+        self.assignment_response_cache = ""
+        self.assignment_export_title = "Assignment Support"
+        self.assignment_export_name = "assignment_support"
+        self._set_text(self.assignment_result_text, "", read_only=True)
+        self.assignment_export_button.configure(state="disabled")
+        if not self.assignment_summary_cache:
+            self.assignment_progress_var.set("Upload or paste the assignment, then analyze it.")
+
+    def clear_codefix_form(self) -> None:
+        self.codefix_title_var.set("")
+        self.codefix_language_var.set("Python")
+        self._set_text(self.codefix_error_text, "")
+        self._set_text(self.codefix_source_text, "")
+        self._set_text(self.codefix_expectation_text, "")
+        self.status_var.set("Code fixer form cleared.")
+
+    def clear_codefix_result(self) -> None:
+        self.codefix_response_cache = ""
+        self.codefix_export_title = "Code Fix"
+        self.codefix_export_name = "code_fix"
+        self._set_text(self.codefix_result_text, "", read_only=True)
+        self.codefix_export_button.configure(state="disabled")
+        self.codefix_progress_var.set("Paste the code and error details, then generate a fix.")
+
+    def _start_ai_job(self, label: str, prompt: str, callback: object) -> None:
+        if self.busy:
+            self._notify("Please Wait", "Another AI request is still running.", level="warning")
+            return
+        if not self.ai_ready:
+            self._notify("AI Not Ready", "Configure .env and install dependencies before using AI features.", level="warning")
+            return
+
+        self.busy = True
+        self._set_ai_buttons_state(False)
+        self.status_var.set(f"Generating {label}...")
+        worker = threading.Thread(target=self._run_ai_job, args=(label, prompt, callback), daemon=True)
+        worker.start()
+
+    def _run_ai_job(self, label: str, prompt: str, callback: object) -> None:
+        try:
+            result = generate_text(prompt, label)
+        except Exception as exc:
+            self.after(0, lambda: self._finish_ai_job_error(str(exc)))
+            return
+        self.after(0, lambda: self._finish_ai_job_success(result, callback))
+
+    def _finish_ai_job_success(self, result: str, callback: object) -> None:
+        self.busy = False
+        self._set_ai_buttons_state(True)
+        callback(result)
+
+    def _finish_ai_job_error(self, error: str) -> None:
+        self.busy = False
+        self._set_ai_buttons_state(True)
+        self._notify("Generation Error", error, level="error")
+    def start_quiz_analysis(self) -> None:
+        source = self._get_text(self.quiz_source_text).strip()
+        if not source:
+            self._notify("Missing Content", "Upload or paste quiz content before analyzing it.", level="warning")
+            return
+
+        self.quiz_progress_var.set("Reading the file and summarizing the task...")
+        prompt = (
+            "Analyze the following academic material for educational review.\n"
+            f"Saved dashboard profile:\n{self._identity_block() or 'No saved profile'}\n\n"
+            f"Source content:\n{source}\n\n"
+            "Return these sections clearly:\n"
+            "1. Summary\n"
+            "2. What task or instructions seem to be required\n"
+            "3. Important topics, clues, or constraints\n"
+            "4. Best next step for the student"
+        )
+        self._start_ai_job("quiz analysis", prompt, self.finish_quiz_analysis)
+
+    def finish_quiz_analysis(self, result: str) -> None:
+        self.quiz_summary_cache = result
+        self._set_text(self.quiz_summary_text, result, read_only=True)
+        self.quiz_progress_var.set("Summary ready. Choose full response or specific prompt next.")
+        self.status_var.set("Quiz analysis complete.")
+
+    def start_quiz_response(self) -> None:
+        source = self._get_text(self.quiz_source_text).strip()
+        if not source:
+            self._notify("Missing Content", "Upload or paste quiz content before generating a response.", level="warning")
+            return
+        if not self.quiz_summary_cache.strip():
+            self._notify("Analyze First", "Run the summary step first so the app can read the task before generating a response.", level="warning")
+            return
+
+        mode = self.quiz_mode_var.get()
+        custom_prompt = self._get_text(self.quiz_prompt_text).strip()
+        if mode == "specific" and not custom_prompt:
+            self._notify("Missing Prompt", "Add a specific prompt or switch to full mode.", level="warning")
+            return
+
+        source_name = self.quiz_loaded_path.stem if self.quiz_loaded_path else "quiz_activity"
+        self.quiz_export_title = f"Quiz Support: {source_name.replace('_', ' ').title()}"
+        self.quiz_export_name = sanitize_filename(source_name)
+        self.quiz_progress_var.set("Generating quiz response...")
+
+        if mode == "complete":
+            instructions = (
+                "Create a complete educational response based on the content. If there are visible questions, answer them in order and include short explanations. If the file describes a task instead of direct questions, complete the task as fully as possible."
             )
+        else:
+            instructions = (
+                "Follow the user's specific prompt while staying grounded in the uploaded content and analysis.\n"
+                f"Specific prompt: {custom_prompt}"
+            )
+
+        prompt = (
+            "Use the uploaded quiz/activity content for educational support.\n"
+            f"Saved dashboard profile:\n{self._identity_block() or 'No saved profile'}\n\n"
+            f"Analysis already prepared:\n{self.quiz_summary_cache}\n\n"
+            f"Source content:\n{source}\n\n"
+            f"Instructions:\n{instructions}\n\n"
+            "Structure the answer with:\n"
+            "1. Task understanding\n"
+            "2. Response\n"
+            "3. Short explanation or rationale\n\n"
+            "Keep the output clean and readable. Avoid markdown symbols like ### unless a heading is truly needed."
+        )
+        self._start_ai_job("quiz response", prompt, self.finish_quiz_response)
+
+    def finish_quiz_response(self, result: str) -> None:
+        self.quiz_response_cache = result
+        self._set_text(self.quiz_result_text, result, read_only=True)
+        self.quiz_export_button.configure(state="normal")
+        self.quiz_progress_var.set("Quiz response ready. Export if you want a Word copy.")
+        self.status_var.set("Quiz response complete.")
+
+    def export_quiz_result(self) -> None:
+        if not self.quiz_response_cache.strip():
+            self._notify("Nothing To Export", "Generate a quiz response first.", level="warning")
+            return
+        output_path = self._export_text_output(self.quiz_export_title, self.quiz_response_cache, self.quiz_export_name, "quiz")
+        if output_path is not None:
+            self.clear_quiz_workspace()
+            self.status_var.set(f"Saved {output_path.name} and cleared the quiz workspace.")
+
+    def _essay_language(self) -> str | None:
+        tagalog = self.essay_tagalog_var.get()
+        english = self.essay_english_var.get()
+        if tagalog and english:
+            return "Taglish"
+        if tagalog:
+            return "Tagalog"
+        if english:
+            return "English"
+        return None
+
+    def start_essay_generation(self) -> None:
+        title = self.essay_title_var.get().strip()
+        prompt_text = self._get_text(self.essay_prompt_text).strip()
+        language = self._essay_language()
+        if not title:
+            self._notify("Missing Title", "Enter the essay title before generating.", level="warning")
+            return
+        if language is None:
+            self._notify("Missing Language", "Select Tagalog, English, or both for Taglish.", level="warning")
+            return
+
+        try:
+            target_words = int(self.essay_word_count_var.get().strip())
+        except ValueError:
+            self._notify("Invalid Word Count", "Enter a valid number for the target word count.", level="warning")
+            return
+        if target_words < 100:
+            self._notify("Word Count Too Low", "Use at least 100 words for the essay target.", level="warning")
+            return
+
+        self.essay_export_title = title
+        self.essay_export_name = sanitize_filename(title.lower().replace(" ", "_"))
+        self.essay_progress_var.set("Generating essay draft...")
+        prompt = (
+            "Write a polished educational essay draft.\n"
+            f"Saved dashboard profile:\n{self._identity_block() or 'No saved profile'}\n\n"
+            f"Essay title: {title}\n"
+            f"Target length: about {target_words} words\n"
+            f"Language: {language}\n"
+            f"Specific prompt: {prompt_text or 'No extra prompt provided'}\n\n"
+            "Return these plain-text sections in this exact order:\n"
+            "Heading Suggestion:\n"
+            "Essay Body:\n"
+            "Self-Check Tip:\n\n"
+            "Do not use markdown symbols like ### or ####."
+        )
+        self._start_ai_job("essay draft", prompt, self.finish_essay_generation)
+
+    def finish_essay_generation(self, result: str) -> None:
+        self.essay_response_cache = result
+        self._set_text(self.essay_result_text, result, read_only=True)
+        self.essay_export_button.configure(state="normal")
+        self.essay_progress_var.set("Essay ready. Export it if you want a Word copy.")
+        self.status_var.set("Essay generation complete.")
+
+    def export_essay_result(self) -> None:
+        if not self.essay_response_cache.strip():
+            self._notify("Nothing To Export", "Generate an essay first.", level="warning")
+            return
+        output_path = self._export_text_output(
+            self.essay_export_title,
+            self.essay_response_cache,
+            self.essay_export_name,
+            "essay",
+            name_override=self.essay_specific_name_var.get().strip(),
+        )
+        if output_path is not None:
+            self.clear_essay_form()
+            self.clear_essay_result()
+            self.status_var.set(f"Saved {output_path.name} and cleared the essay workspace.")
+
+    def start_activity_generation(self) -> None:
+        title = self.activity_title_var.get().strip()
+        activity_type = self.activity_type_var.get().strip() or "Activity"
+        level = self.activity_level_var.get().strip()
+        request = self._get_text(self.activity_prompt_text).strip()
+        if not title:
+            self._notify("Missing Topic", "Enter the activity topic or title before generating.", level="warning")
+            return
+
+        self.activity_export_title = title
+        self.activity_export_name = sanitize_filename(title.lower().replace(" ", "_"))
+        self.activity_progress_var.set("Generating activity draft...")
+        prompt = (
+            "Create a structured educational activity for offline study use.\n"
+            f"Saved dashboard profile:\n{self._identity_block() or 'No saved profile'}\n\n"
+            f"Activity title or topic: {title}\n"
+            f"Activity type: {activity_type}\n"
+            f"Level or class: {level or 'Not specified'}\n"
+            f"Specific request: {request or 'No extra request provided'}\n\n"
+            "Return these plain-text sections in this exact order:\n"
+            "Activity Title:\n"
+            "Objective:\n"
+            "Instructions:\n"
+            "Activity Proper:\n"
+            "Answer Guide:\n\n"
+            "Do not use markdown symbols like ### or ####."
+        )
+        self._start_ai_job("activity draft", prompt, self.finish_activity_generation)
+
+    def finish_activity_generation(self, result: str) -> None:
+        self.activity_response_cache = result
+        self._set_text(self.activity_result_text, result, read_only=True)
+        self.activity_export_button.configure(state="normal")
+        self.activity_progress_var.set("Activity ready. Export it if you want a Word copy.")
+        self.status_var.set("Activity generation complete.")
+
+    def export_activity_result(self) -> None:
+        if not self.activity_response_cache.strip():
+            self._notify("Nothing To Export", "Generate an activity first.", level="warning")
+            return
+        output_path = self._export_text_output(
+            self.activity_export_title,
+            self.activity_response_cache,
+            self.activity_export_name,
+            "activity",
+        )
+        if output_path is not None:
+            self.clear_activity_form()
+            self.clear_activity_result()
+            self.status_var.set(f"Saved {output_path.name} and cleared the activity workspace.")
+
+    def start_document_generation(self) -> None:
+        title = self.document_title_var.get().strip()
+        doc_type = self.document_type_var.get().strip() or "Study Handout"
+        audience = self.document_audience_var.get().strip()
+        request = self._get_text(self.document_prompt_text).strip()
+        if not title:
+            self._notify("Missing Title", "Enter the document title before generating.", level="warning")
+            return
+        if not request:
+            self._notify("Missing Request", "Describe what the document should contain before generating.", level="warning")
+            return
+
+        self.document_export_title = title
+        self.document_export_name = sanitize_filename(title.lower().replace(" ", "_"))
+        self.document_progress_var.set("Generating document draft...")
+        prompt = (
+            "Create a structured educational document.\n"
+            f"Saved dashboard profile:\n{self._identity_block() or 'No saved profile'}\n\n"
+            f"Document title: {title}\n"
+            f"Document type: {doc_type}\n"
+            f"Audience or purpose: {audience or 'Not specified'}\n"
+            f"Content request: {request}\n\n"
+            "Return these plain-text sections in this exact order:\n"
+            "Document Type:\n"
+            "Purpose:\n"
+            "Main Content:\n\n"
+            "Do not use markdown symbols like ### or ####."
+        )
+        self._start_ai_job("document draft", prompt, self.finish_document_generation)
+
+    def finish_document_generation(self, result: str) -> None:
+        self.document_response_cache = result
+        self._set_text(self.document_result_text, result, read_only=True)
+        self.document_export_button.configure(state="normal")
+        self.document_progress_var.set("Document ready. Export it if you want a Word copy.")
+        self.status_var.set("Document generation complete.")
+
+    def export_document_result(self) -> None:
+        if not self.document_response_cache.strip():
+            self._notify("Nothing To Export", "Generate a document first.", level="warning")
+            return
+        output_path = self._export_text_output(
+            self.document_export_title,
+            self.document_response_cache,
+            self.document_export_name,
+            "document",
+        )
+        if output_path is not None:
+            self.clear_document_form()
+            self.clear_document_result()
+            self.status_var.set(f"Saved {output_path.name} and cleared the document workspace.")
+
+    def start_assignment_analysis(self) -> None:
+        source = self._get_text(self.assignment_source_text).strip()
+        if not source:
+            self._notify("Missing Content", "Upload or paste assignment content before analyzing it.", level="warning")
+            return
+
+        self.assignment_progress_var.set("Reading the assignment and summarizing the task...")
+        prompt = (
+            "Analyze the following assignment for educational review.\n"
+            f"Saved dashboard profile:\n{self._identity_block() or 'No saved profile'}\n\n"
+            f"Assignment content:\n{source}\n\n"
+            "Return these sections clearly:\n"
+            "1. Assignment summary\n"
+            "2. What is being asked\n"
+            "3. Important requirements or constraints\n"
+            "4. Best approach for the student"
+        )
+        self._start_ai_job("assignment analysis", prompt, self.finish_assignment_analysis)
+
+    def finish_assignment_analysis(self, result: str) -> None:
+        self.assignment_summary_cache = result
+        self._set_text(self.assignment_summary_text, result, read_only=True)
+        self.assignment_progress_var.set("Assignment summary ready. Generate the guided response next.")
+        self.status_var.set("Assignment analysis complete.")
+
+    def start_assignment_response(self) -> None:
+        source = self._get_text(self.assignment_source_text).strip()
+        if not source:
+            self._notify("Missing Content", "Upload or paste assignment content before generating a response.", level="warning")
+            return
+        if not self.assignment_summary_cache.strip():
+            self._notify("Analyze First", "Run the assignment analysis first.", level="warning")
+            return
+
+        mode = self.assignment_mode_var.get()
+        custom_prompt = self._get_text(self.assignment_prompt_text).strip()
+        source_name = self.assignment_loaded_path.stem if self.assignment_loaded_path else "assignment_task"
+        self.assignment_export_title = f"Assignment Support: {source_name.replace('_', ' ').title()}"
+        self.assignment_export_name = sanitize_filename(source_name)
+        self.assignment_progress_var.set("Generating assignment guidance...")
+
+        if mode == "complete":
+            instructions = (
+                "Create a full draft response based on the assignment while keeping it clear, organized, and educational."
+            )
+        else:
+            instructions = (
+                "Create a guided response that explains how to approach the assignment and includes a sample draft the student can review."
+            )
+        if custom_prompt:
+            instructions = f"{instructions}\nSpecific prompt: {custom_prompt}"
+
+        prompt = (
+            "Use the uploaded assignment for educational support.\n"
+            f"Saved dashboard profile:\n{self._identity_block() or 'No saved profile'}\n\n"
+            f"Assignment analysis:\n{self.assignment_summary_cache}\n\n"
+            f"Assignment content:\n{source}\n\n"
+            f"Instructions:\n{instructions}\n\n"
+            "Structure the answer with:\n"
+            "1. Task understanding\n"
+            "2. Solution plan\n"
+            "3. Sample answer or draft\n"
+            "4. Notes to review\n\n"
+            "Keep the output clean and readable. Avoid markdown symbols like ### unless a heading is truly needed."
+        )
+        self._start_ai_job("assignment response", prompt, self.finish_assignment_response)
+
+    def finish_assignment_response(self, result: str) -> None:
+        self.assignment_response_cache = result
+        self._set_text(self.assignment_result_text, result, read_only=True)
+        self.assignment_export_button.configure(state="normal")
+        self.assignment_progress_var.set("Assignment guidance ready. Export if you want a Word copy.")
+        self.status_var.set("Assignment response complete.")
+
+    def export_assignment_result(self) -> None:
+        if not self.assignment_response_cache.strip():
+            self._notify("Nothing To Export", "Generate assignment guidance first.", level="warning")
+            return
+        output_path = self._export_text_output(
+            self.assignment_export_title,
+            self.assignment_response_cache,
+            self.assignment_export_name,
+            "assignment",
+        )
+        if output_path is not None:
+            self.clear_assignment_workspace()
+            self.status_var.set(f"Saved {output_path.name} and cleared the assignment workspace.")
+
+    def start_codefix_generation(self) -> None:
+        title = self.codefix_title_var.get().strip()
+        language = self.codefix_language_var.get().strip() or "Code"
+        error_text = self._get_text(self.codefix_error_text).strip()
+        source = self._get_text(self.codefix_source_text).strip()
+        expectation = self._get_text(self.codefix_expectation_text).strip()
+        if not source:
+            self._notify("Missing Code", "Paste the code snippet before generating a fix.", level="warning")
+            return
+        if not error_text:
+            self._notify("Missing Error Details", "Add the error message or symptoms before generating a fix.", level="warning")
+            return
+
+        export_title = title or f"{language} Code Fix"
+        self.codefix_export_title = export_title
+        self.codefix_export_name = sanitize_filename(export_title.lower().replace(" ", "_"))
+        self.codefix_progress_var.set("Generating code fix...")
+        prompt = (
+            "Fix the following code issue for study and debugging support.\n\n"
+            f"Language or stack: {language}\n"
+            f"Issue title: {title or 'No title provided'}\n"
+            f"Error message or symptoms:\n{error_text}\n\n"
+            f"Code snippet:\n{source}\n\n"
+            f"Expected behavior:\n{expectation or 'Not provided'}\n\n"
+            "Return these plain-text sections in this exact order:\n"
+            "Issue Summary:\n"
+            "Root Cause:\n"
+            "Fixed Version:\n"
+            "Why It Works:\n"
+            "Next Checks:\n\n"
+            "Do not use markdown symbols like ### or ####."
+        )
+        self._start_ai_job("code fix", prompt, self.finish_codefix_generation)
+
+    def finish_codefix_generation(self, result: str) -> None:
+        self.codefix_response_cache = result
+        self._set_text(self.codefix_result_text, result, read_only=True)
+        self.codefix_export_button.configure(state="normal")
+        self.codefix_progress_var.set("Code fix ready. Export it if you want a Word copy.")
+        self.status_var.set("Code fix generation complete.")
+
+    def export_codefix_result(self) -> None:
+        if not self.codefix_response_cache.strip():
+            self._notify("Nothing To Export", "Generate a code fix first.", level="warning")
+            return
+        output_path = self._export_text_output(
+            self.codefix_export_title,
+            self.codefix_response_cache,
+            self.codefix_export_name,
+            "codefix",
+        )
+        if output_path is not None:
+            self.clear_codefix_form()
+            self.clear_codefix_result()
+            self.status_var.set(f"Saved {output_path.name} and cleared the code fixer workspace.")
 
 
 def main() -> None:
-    st.set_page_config(page_title="Hugyoku | Premium Academics Suite", layout="wide", initial_sidebar_state="expanded")
-    st.markdown(THEME_CSS, unsafe_allow_html=True)
-    ensure_state()
-
-    _client, model, error = load_client()
-    ai_ready = error is None
-    model_label = model or "No model configured"
-    ai_message = "AI ready for academics" if ai_ready else error
-
-    render_sidebar(ai_ready, model_label, ai_message)
-    render_header(ai_ready, model_label, ai_message)
-
-    page = st.session_state.active_page
-    if page == "dashboard":
-        render_dashboard()
-    elif page == "academics":
-        render_academics_hub()
-    elif page == "developer":
-        render_developer_hub()
-    elif page == "quiz":
-        render_quiz_page(ai_ready)
-    elif page == "assignment":
-        render_assignment_page(ai_ready)
-    elif page == "essay":
-        render_essay_page(ai_ready)
-    elif page == "activity":
-        render_activity_page(ai_ready)
-    elif page == "document":
-        render_document_page(ai_ready)
-    elif page == "codefix":
-        render_codefix_page(ai_ready)
-    else:
-        go("dashboard")
+    app = PremiumStudyAssistant()
+    app.mainloop()
 
 
 if __name__ == "__main__":
