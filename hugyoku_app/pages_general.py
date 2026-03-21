@@ -262,7 +262,7 @@ def render_admin_page() -> None:
                         active_value = st.checkbox("Account active", value=bool(selected_user["is_active"]), key=f"admin_active_{selected_user_id}")
                         st.markdown("#### Page Permissions")
                         perm_cols = st.columns(2, gap="small")
-                        permissions_keys = ["dashboard", "workspaces", "academics", "developer", "history", "settings", "admin"]
+                        permissions_keys = ["hugyoku", "hugyoku_chat", "dashboard", "workspaces", "academics", "developer", "history", "settings", "admin"]
                         permission_values: dict[str, bool] = {}
                         for idx, permission_key in enumerate(permissions_keys):
                             target_col = perm_cols[idx % 2]
@@ -363,12 +363,14 @@ def render_header(ai_ready: bool, model_label: str, ai_message: str) -> None:
                     ("Workspace", str(workspace.get("name", "General Workspace"))),
                 ]
             )
-            action_a, action_b, action_c = st.columns([1.05, 1, 0.92], gap="small")
+            action_a, action_b, action_c, action_d = st.columns([1, 1, 1, 1], gap="small")
             if action_a.button("Open Hugyoku", key="hero_open_hugyoku", type="primary", use_container_width=True):
                 go("hugyoku")
-            if action_b.button("Open Academics", key="hero_open_academics", use_container_width=True):
+            if action_b.button("Open Hugyoku Chat", key="hero_open_hugyoku_chat", use_container_width=True):
+                go("hugyoku_chat")
+            if action_c.button("Open Academics", key="hero_open_academics", use_container_width=True):
                 go("academics")
-            if action_c.button("Open Developer", key="hero_open_developer", use_container_width=True):
+            if action_d.button("Open Developer", key="hero_open_developer", use_container_width=True):
                 go("developer")
     with right:
         with st.container(border=True):
@@ -405,15 +407,16 @@ def render_header(ai_ready: bool, model_label: str, ai_message: str) -> None:
 def render_sidebar(ai_ready: bool, model_label: str, ai_message: str) -> None:
     nav_items = [
         ("hugyoku", "01 Hugyoku"),
-        ("dashboard", "02 Dashboard"),
-        ("workspaces", "03 Workspaces"),
-        ("academics", "04 Academics"),
-        ("developer", "05 Developer"),
-        ("history", "06 History"),
-        ("settings", "07 Settings"),
+        ("hugyoku_chat", "02 Hugyoku Chat"),
+        ("dashboard", "03 Dashboard"),
+        ("workspaces", "04 Workspaces"),
+        ("academics", "05 Academics"),
+        ("developer", "06 Developer"),
+        ("history", "07 History"),
+        ("settings", "08 Settings"),
     ]
     if can_access_page("admin"):
-        nav_items.append(("admin", "08 Admin"))
+        nav_items.append(("admin", "09 Admin"))
 
     with st.sidebar:
         st.markdown(
@@ -892,6 +895,262 @@ def render_hugyoku_page(ai_ready: bool) -> None:
                     run_understanding_revision()
                 if action_b.button("Generate Final Result", key="hugyoku_generate_result", use_container_width=True, type="primary", disabled=not ai_ready):
                     run_final_generation()
+
+
+def render_hugyoku_chat_page(ai_ready: bool) -> None:
+    messages = list(st.session_state.get("hugyoku_chat_messages", []))
+    reasoning_mode = str(st.session_state.get("hugyoku_chat_reasoning_mode", "Balanced"))
+    selected_model = resolve_hugyoku_chat_model() or current_model_name() or "No model selected"
+    last_used_model = st.session_state.get("hugyoku_chat_last_used_model") or "No response yet"
+
+    def send_hugyoku_chat(doc_files: list[object], image_files: list[object]) -> None:
+        user_prompt = st.session_state.hugyoku_chat_draft.strip()
+        attachment_bundle, issues, ocr_status = read_hugyoku_reference_bundle(
+            doc_files,
+            image_files,
+            st.session_state.hugyoku_chat_attachment_note,
+        )
+        for issue in issues:
+            st.warning(issue)
+        if not user_prompt and not attachment_bundle:
+            st.warning("Type a message, add files, or record your voice first.")
+            return
+
+        requested_model = resolve_hugyoku_chat_model()
+        if not requested_model:
+            st.warning("Choose a valid AI model first.")
+            return
+
+        attachment_names = summarize_uploaded_names(doc_files) + summarize_uploaded_names(image_files)
+        message_text = user_prompt or "Please analyze the attached files or images."
+        append_hugyoku_chat_message(
+            "user",
+            message_text,
+            reasoning=reasoning_mode,
+            attachments=attachment_names,
+        )
+        result, used_model = run_generation_with_details(
+            build_hugyoku_chat_prompt(message_text, attachment_bundle, reasoning_mode),
+            "hugyoku chat reply",
+            requested_model=requested_model,
+        )
+        if result:
+            append_hugyoku_chat_message(
+                "assistant",
+                result,
+                model_name=used_model or requested_model,
+                reasoning=reasoning_mode,
+            )
+            st.session_state.hugyoku_chat_last_bundle = attachment_bundle
+            st.session_state.hugyoku_chat_last_ocr_status = ocr_status
+            st.session_state.hugyoku_chat_last_used_model = used_model or requested_model
+            st.session_state.hugyoku_chat_draft = ""
+            st.session_state.hugyoku_chat_attachment_note = ""
+            append_history_entry(
+                "generation",
+                "Hugyoku Chat reply generated",
+                short_preview(message_text, 160),
+                "hugyoku_chat",
+                active_workspace_name(),
+                "hugyoku_chat",
+            )
+            st.session_state.flash_message = "Chat response ready. Continue the thread or upload new references."
+            st.session_state.flash_level = "success"
+            st.rerun()
+
+    with st.container(border=True):
+        render_card_header(
+            PAGE_DETAILS["hugyoku_chat"]["title"],
+            PAGE_DETAILS["hugyoku_chat"]["subtitle"],
+            "Chat Workspace",
+            anchor="HC",
+            tier="primary",
+        )
+        st.markdown(
+            """
+            <div class="hugyoku-chat-hero">
+              <div class="hugyoku-chat-note">
+                Codex-inspired free-form chat for research, writing, coding, and task support. Keep the thread going,
+                attach files or images, switch the AI model, choose the reasoning depth, and use the mic to convert your
+                voice into text before sending.
+              </div>
+              <div class="hugyoku-chat-toolbar">
+                <span class="hugyoku-chat-chip">Responsive Chat UI</span>
+                <span class="hugyoku-chat-chip">File + Image Intake</span>
+                <span class="hugyoku-chat-chip">Model + Reasoning</span>
+                <span class="hugyoku-chat-chip">Voice To Text</span>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        render_kpi_row(
+            [
+                ("Thread messages", str(len(messages))),
+                ("Selected model", selected_model),
+                ("Reasoning", reasoning_mode),
+                ("Last used model", last_used_model),
+            ]
+        )
+
+    with st.container(border=True):
+        if messages:
+            render_card_header(
+                "Conversation",
+                "The thread stays visible here. Continue naturally and Hugyoku will keep the current context in view.",
+                "Live Thread",
+                anchor="CT",
+                tier="secondary",
+                compact=True,
+            )
+            for message in messages:
+                role = str(message.get("role", "assistant")).strip().lower()
+                with st.chat_message("user" if role == "user" else "assistant"):
+                    header_bits: list[str] = []
+                    if message.get("reasoning"):
+                        header_bits.append(f"Reasoning: {message['reasoning']}")
+                    if message.get("model"):
+                        header_bits.append(f"Model: {message['model']}")
+                    if message.get("timestamp"):
+                        header_bits.append(str(message["timestamp"]))
+                    if header_bits:
+                        st.caption(" • ".join(header_bits))
+                    st.markdown(str(message.get("content", "")))
+                    attachments = list(message.get("attachments", []))
+                    if attachments:
+                        attachment_html = "".join(
+                            f"<span class='hugyoku-chat-attachment'>+ {html_text(name)}</span>" for name in attachments
+                        )
+                        st.markdown(f"<div class='hugyoku-chat-attachment-list'>{attachment_html}</div>", unsafe_allow_html=True)
+        else:
+            render_card_header(
+                "Start The Thread",
+                "No messages yet. Send a task, ask a question, attach files, or record your voice to begin.",
+                "Empty State",
+                anchor="EM",
+                tier="secondary",
+            )
+            render_route_block(
+                "Suggested first prompt",
+                "Example: Explain Aristotle's major contributions and make it concise for a reviewer sheet.\n"
+                "You can also attach a rubric, screenshot, or document first.",
+            )
+
+    with st.container(border=True):
+        render_card_header(
+            "Compose Message",
+            "This is the main chat composer. Add text, attachments, model settings, and voice input before you send.",
+            "Composer",
+            anchor="CM",
+            tier="primary",
+        )
+        control_left, control_mid, control_right = st.columns([0.22, 0.39, 0.39], gap="small")
+        if control_left.button(
+            "+ Tools & Uploads",
+            key="hugyoku_chat_toggle_controls",
+            use_container_width=True,
+            type="secondary",
+        ):
+            st.session_state.hugyoku_chat_controls_open = not bool(st.session_state.hugyoku_chat_controls_open)
+            st.rerun()
+        control_mid.selectbox(
+            "AI version",
+            options=MODEL_SELECTION_OPTIONS,
+            key="hugyoku_chat_model_choice",
+            help="Choose which Hugging Face model this chat turn should use.",
+        )
+        control_right.selectbox(
+            "Reasoning",
+            options=["Fast", "Balanced", "Deep"],
+            key="hugyoku_chat_reasoning_mode",
+            help="Controls how carefully Hugyoku should reason before answering.",
+        )
+
+        if st.session_state.hugyoku_chat_model_choice == "Custom":
+            st.text_input(
+                "Custom AI model",
+                key="hugyoku_chat_model_custom",
+                placeholder="Example: Qwen/Qwen2.5-7B-Instruct",
+            )
+
+        doc_files: list[object] = []
+        image_files: list[object] = []
+        with st.expander("Attachments, mic, and advanced controls", expanded=bool(st.session_state.hugyoku_chat_controls_open)):
+            upload_left, upload_right = st.columns(2, gap="large")
+            with upload_left:
+                doc_files = st.file_uploader(
+                    "Upload files",
+                    type=["docx", "pdf", "txt", "md"],
+                    accept_multiple_files=True,
+                    key="hugyoku_chat_docs",
+                    help="Attach references, assignments, notes, or rubrics for this chat turn.",
+                ) or []
+                image_files = st.file_uploader(
+                    "Upload images",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    accept_multiple_files=True,
+                    key="hugyoku_chat_images",
+                    help="Attach screenshots or photos the AI should analyze.",
+                ) or []
+                if doc_files or image_files:
+                    file_html = "".join(
+                        f"<span class='hugyoku-chat-attachment'>+ {html_text(name)}</span>"
+                        for name in summarize_uploaded_names(doc_files) + summarize_uploaded_names(image_files)
+                    )
+                    st.markdown(f"<div class='hugyoku-chat-attachment-list'>{file_html}</div>", unsafe_allow_html=True)
+            with upload_right:
+                st.text_area(
+                    "Attachment note",
+                    key="hugyoku_chat_attachment_note",
+                    height=100,
+                    placeholder="Optional: tell Hugyoku what to focus on inside the uploaded files or images.",
+                )
+                language_col, mic_col = st.columns([0.42, 0.58], gap="small")
+                language_col.selectbox(
+                    "Mic language",
+                    options=["en-US", "fil-PH"],
+                    key="hugyoku_chat_voice_language",
+                    help="Choose the speech-to-text recognition language.",
+                )
+                if mic_transcription_available():
+                    transcript = speech_to_text(
+                        start_prompt="Start Mic",
+                        stop_prompt="Stop Mic",
+                        just_once=True,
+                        use_container_width=True,
+                        language=st.session_state.hugyoku_chat_voice_language,
+                        key="hugyoku_chat_mic",
+                    )
+                    if transcript:
+                        cleaned = transcript.strip()
+                        if cleaned and cleaned != st.session_state.hugyoku_chat_last_transcript_text:
+                            existing = st.session_state.hugyoku_chat_draft.strip()
+                            st.session_state.hugyoku_chat_draft = f"{existing}\n{cleaned}".strip() if existing else cleaned
+                            st.session_state.hugyoku_chat_last_transcript_text = cleaned
+                            st.session_state.flash_message = "Voice converted to text. Review the draft before sending."
+                            st.session_state.flash_level = "success"
+                            st.rerun()
+                else:
+                    mic_col.caption("Mic-to-text support is not available in this environment yet.")
+                if st.session_state.hugyoku_chat_last_ocr_status:
+                    render_route_block("Last OCR status", st.session_state.hugyoku_chat_last_ocr_status)
+
+        st.text_area(
+            "Message",
+            key="hugyoku_chat_draft",
+            height=150,
+            placeholder="Ask anything, assign a task, request a draft, or continue the conversation here.",
+        )
+        st.markdown(
+            "<div class='hugyoku-chat-composer-note'>If you uploaded files or images, Hugyoku will read them for this turn before answering.</div>",
+            unsafe_allow_html=True,
+        )
+        send_col, clear_col = st.columns(2, gap="small")
+        if send_col.button("Send Message", key="hugyoku_chat_send", use_container_width=True, type="primary", disabled=not ai_ready):
+            send_hugyoku_chat(doc_files, image_files)
+        if clear_col.button("Clear Chat Thread", key="hugyoku_chat_clear", use_container_width=True):
+            queue_reset("clear_hugyoku_chat_workspace", "Hugyoku Chat cleared.")
+            st.rerun()
 
 
 def render_dashboard() -> None:

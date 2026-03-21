@@ -5,6 +5,7 @@ from .pages_general import (
     render_admin_page,
     render_dashboard,
     render_header,
+    render_hugyoku_chat_page,
     render_hugyoku_page,
     render_login_gate,
     render_sidebar,
@@ -32,7 +33,7 @@ def main() -> None:
 
     if not can_access_page(st.session_state.active_page):
         fallback_page = "dashboard"
-        for candidate in ["hugyoku", "dashboard", "workspaces", "academics", "developer", "history", "settings"]:
+        for candidate in ["hugyoku", "hugyoku_chat", "dashboard", "workspaces", "academics", "developer", "history", "settings"]:
             if can_access_page(candidate):
                 fallback_page = candidate
                 break
@@ -53,6 +54,8 @@ def main() -> None:
     page = st.session_state.active_page
     if page == "hugyoku":
         render_hugyoku_page(ai_ready)
+    elif page == "hugyoku_chat":
+        render_hugyoku_chat_page(ai_ready)
     elif page == "dashboard":
         render_dashboard()
     elif page == "workspaces":

@@ -67,8 +67,13 @@ except Exception:
     tk = None
     filedialog = None
 
+try:
+    from streamlit_mic_recorder import speech_to_text
+except Exception:
+    speech_to_text = None
 
-APP_DIR = Path(__file__).resolve().parent
+
+APP_DIR = Path(__file__).resolve().parent.parent
 ENV_PATH = APP_DIR / ".env"
 AUTH_DB_PATH = APP_DIR / "hugyoku_auth.db"
 _OCR_ENGINE: object | None = None
@@ -76,6 +81,7 @@ _OCR_ENGINE: object | None = None
 ROLE_PERMISSIONS = {
     "super_admin": {
         "hugyoku": True,
+        "hugyoku_chat": True,
         "dashboard": True,
         "workspaces": True,
         "academics": True,
@@ -86,6 +92,7 @@ ROLE_PERMISSIONS = {
     },
     "admin": {
         "hugyoku": True,
+        "hugyoku_chat": True,
         "dashboard": True,
         "workspaces": True,
         "academics": True,
@@ -96,6 +103,7 @@ ROLE_PERMISSIONS = {
     },
     "member": {
         "hugyoku": True,
+        "hugyoku_chat": True,
         "dashboard": True,
         "workspaces": True,
         "academics": True,
@@ -106,6 +114,7 @@ ROLE_PERMISSIONS = {
     },
     "viewer": {
         "hugyoku": True,
+        "hugyoku_chat": True,
         "dashboard": True,
         "workspaces": True,
         "academics": True,
@@ -2932,6 +2941,18 @@ STATE_DEFAULTS.update(
         "hugyoku_generation_note": "",
         "hugyoku_last_bundle": "",
         "hugyoku_last_ocr_status": "",
+        "hugyoku_chat_messages": [],
+        "hugyoku_chat_draft": "",
+        "hugyoku_chat_attachment_note": "",
+        "hugyoku_chat_controls_open": False,
+        "hugyoku_chat_reasoning_mode": "Balanced",
+        "hugyoku_chat_model_choice": "Active Session Model",
+        "hugyoku_chat_model_custom": "",
+        "hugyoku_chat_voice_language": "en-US",
+        "hugyoku_chat_last_bundle": "",
+        "hugyoku_chat_last_ocr_status": "",
+        "hugyoku_chat_last_used_model": "",
+        "hugyoku_chat_last_transcript_text": "",
         "source_lab_question_input": "",
         "source_lab_answer": "",
         "source_lab_analysis": "",
@@ -3033,6 +3054,10 @@ PAGE_DETAILS.update(
             "title": "Hugyoku",
             "subtitle": "Universal academic command workflow that reads the task, confirms the AI understanding, loops on corrections, then generates an editable final result and export.",
         },
+        "hugyoku_chat": {
+            "title": "Hugyoku Chat",
+            "subtitle": "A responsive chat workspace for free-form academic and developer conversations with files, images, model selection, reasoning controls, and voice-to-text support.",
+        },
         "workspaces": {
             "title": "Workspaces",
             "subtitle": "Create project workspaces, collect source files and screenshots, and keep all generated outputs grouped by task.",
@@ -3051,6 +3076,102 @@ PAGE_DETAILS.update(
         },
     }
 )
+
+THEME_CSS += """
+<style>
+div[data-testid="stChatMessage"] {
+  border: 1px solid rgba(116, 134, 168, 0.2);
+  border-radius: 1.15rem;
+  background: linear-gradient(180deg, rgba(19, 26, 41, 0.9), rgba(13, 19, 32, 0.92));
+  box-shadow: 0 18px 36px rgba(2, 6, 16, 0.28);
+  padding: 0.25rem 0.4rem;
+}
+
+div[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p {
+  line-height: 1.65;
+}
+
+.hugyoku-chat-hero {
+  display: grid;
+  gap: 1rem;
+}
+
+.hugyoku-chat-note {
+  color: rgba(199, 214, 239, 0.82);
+  font-size: 0.94rem;
+  line-height: 1.6;
+}
+
+.hugyoku-chat-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.hugyoku-chat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.42rem 0.78rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 210, 138, 0.18);
+  background: rgba(255, 194, 115, 0.08);
+  color: #ffe2b4;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hugyoku-chat-shell {
+  display: grid;
+  gap: 1rem;
+}
+
+.hugyoku-chat-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.hugyoku-chat-composer-note {
+  color: rgba(199, 214, 239, 0.72);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.hugyoku-chat-attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.hugyoku-chat-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem 0.72rem;
+  border-radius: 0.82rem;
+  border: 1px solid rgba(116, 134, 168, 0.16);
+  background: rgba(18, 26, 42, 0.84);
+  color: #dce7fa;
+  font-size: 0.82rem;
+}
+
+@media (max-width: 900px) {
+  .hugyoku-chat-meta {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .hugyoku-chat-meta {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+"""
 
 EXPORT_TEMPLATES = {
     "Academic Classic": {
@@ -3786,6 +3907,108 @@ def run_generation_with_details(
                 record_last_generation(label, model or requested_model or "", "error", str(exc))
             st.error(str(exc))
             return None, model
+
+
+def mic_transcription_available() -> bool:
+    return speech_to_text is not None
+
+
+def resolve_hugyoku_chat_model() -> str:
+    choice = str(st.session_state.get("hugyoku_chat_model_choice", "Active Session Model"))
+    custom_value = str(st.session_state.get("hugyoku_chat_model_custom", ""))
+    return resolve_model_selection(choice, custom_value)
+
+
+def reasoning_mode_instruction(mode: str) -> str:
+    normalized = (mode or "").strip().lower()
+    if normalized == "fast":
+        return "Respond quickly and directly. Keep the answer concise and avoid unnecessary elaboration."
+    if normalized == "deep":
+        return "Think carefully, structure the response in clear steps, and check that the answer fully addresses the user's request."
+    return "Balance speed and depth. Give a clear, complete, and well-structured answer without unnecessary filler."
+
+
+def summarize_uploaded_names(files: list[object]) -> list[str]:
+    names: list[str] = []
+    for item in files:
+        label = str(getattr(item, "name", "attachment")).strip()
+        if label:
+            names.append(label)
+    return names
+
+
+def append_hugyoku_chat_message(
+    role: str,
+    content: str,
+    *,
+    model_name: str = "",
+    reasoning: str = "",
+    attachments: list[str] | None = None,
+) -> None:
+    messages = list(st.session_state.get("hugyoku_chat_messages", []))
+    messages.append(
+        {
+            "role": role,
+            "content": content.strip(),
+            "timestamp": workspace_timestamp(),
+            "model": model_name.strip(),
+            "reasoning": reasoning.strip(),
+            "attachments": list(attachments or []),
+        }
+    )
+    st.session_state.hugyoku_chat_messages = messages
+
+
+def chat_history_as_text(limit: int = 12) -> str:
+    messages = list(st.session_state.get("hugyoku_chat_messages", []))
+    if not messages:
+        return "No previous conversation."
+    trimmed = messages[-limit:]
+    lines: list[str] = []
+    for message in trimmed:
+        role = str(message.get("role", "user")).upper()
+        content = str(message.get("content", "")).strip()
+        if not content:
+            continue
+        lines.append(f"{role}: {content}")
+    return "\n\n".join(lines).strip() or "No previous conversation."
+
+
+def build_hugyoku_chat_prompt(
+    user_prompt: str,
+    attachment_bundle: str,
+    reasoning_mode: str,
+) -> str:
+    history_text = chat_history_as_text()
+    context_block = attachment_bundle.strip() or "No file or image context was attached to this turn."
+    context_rules = (
+        "If the user is asking about the uploaded files or images, use ONLY the attachment context for factual claims about them.\n"
+        "If the attachment context is missing or insufficient for a factual request about the attachments, clearly say that no reliable information was found in the provided context.\n"
+        "Do not invent quotes, citations, or document details.\n"
+    )
+    if not attachment_bundle.strip():
+        context_rules = (
+            "No attachment context is available for this turn.\n"
+            "Answer helpfully using the request itself, but do not claim certainty for facts you cannot support.\n"
+            "If a detail is uncertain, say so plainly instead of inventing it.\n"
+        )
+    return (
+        "You are Hugyoku Chat, a premium academic and analytical assistant.\n"
+        "Respond in a clean chat style with strong clarity, high factual discipline, and polished structure.\n"
+        f"Reasoning mode: {reasoning_mode.strip() or 'Balanced'}.\n"
+        f"Reasoning instruction: {reasoning_mode_instruction(reasoning_mode)}\n\n"
+        "Conversation history:\n"
+        f"{history_text}\n\n"
+        "Attachment context for this turn:\n"
+        f"{context_block}\n\n"
+        "Rules:\n"
+        f"{context_rules}"
+        "If the user asks for a draft, output the draft directly.\n"
+        "If the user asks for a file format like DOCX, PDF, or TXT, mention the requested format in the response so it is easy to export later.\n"
+        "Keep the answer professional, direct, and easy to continue in chat.\n\n"
+        "Current user message:\n"
+        f"{user_prompt.strip()}"
+    )
 
 
 def run_model_verification_probe(target_model: str) -> tuple[bool, str]:
@@ -4547,6 +4770,21 @@ def clear_hugyoku_workspace() -> None:
     st.session_state.hugyoku_last_ocr_status = ""
 
 
+def clear_hugyoku_chat_workspace() -> None:
+    st.session_state.hugyoku_chat_messages = []
+    st.session_state.hugyoku_chat_draft = ""
+    st.session_state.hugyoku_chat_attachment_note = ""
+    st.session_state.hugyoku_chat_controls_open = False
+    st.session_state.hugyoku_chat_reasoning_mode = "Balanced"
+    st.session_state.hugyoku_chat_model_choice = "Active Session Model"
+    st.session_state.hugyoku_chat_model_custom = ""
+    st.session_state.hugyoku_chat_voice_language = "en-US"
+    st.session_state.hugyoku_chat_last_bundle = ""
+    st.session_state.hugyoku_chat_last_ocr_status = ""
+    st.session_state.hugyoku_chat_last_used_model = ""
+    st.session_state.hugyoku_chat_last_transcript_text = ""
+
+
 RESET_ACTIONS.update(
     {
         "clear_workspace_analysis_workspace": clear_workspace_analysis_workspace,
@@ -4563,6 +4801,7 @@ RESET_ACTIONS.update(
         "clear_selftest_workspace": clear_selftest_workspace,
         "clear_compare_workspace": clear_compare_workspace,
         "clear_hugyoku_workspace": clear_hugyoku_workspace,
+        "clear_hugyoku_chat_workspace": clear_hugyoku_chat_workspace,
     }
 )
 
